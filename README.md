@@ -25,15 +25,15 @@
 
 ## 功能特性
 
-| 类别 | 内容 |
-|---|---|
-| 姿态解算 | Madgwick AHRS，支持陀螺 / 6 轴 IMU / 9 轴 MARG 三档切换，磁力计可用性动态判定 |
-| 控制 | 姿态外环（角度→角速度）+ 角速度内环（串级 PID），500 Hz 内环 / 200 Hz 外环；D 项低通、积分限幅与抗饱和 |
-| 定高辅助 | 气压计 + 超声波融合，CH7 一键起飞 / 定高 / 缓降状态机，含落地检测与悬停油门自学习 |
-| 安全层 | 独立 SafetyTask 状态机（DISARMED / ARM_PENDING / ARMED / FATAL），链路失效与超温超倾判据，看门狗门控 |
-| 传感器校准 | 陀螺零偏、加计零偏/比例、磁力计硬磁/软磁，Flash 掉电保存 |
-| 通信 | 匿名上位机 V7 协议（蓝牙 SPP），姿态/传感器实时上报 + PID 参数在线读写 + 日志窗口 |
-| 外设驱动 | I²C 异步事务（审计 + 降级 + 总线解锁自恢复）、UART 循环 DMA、PWM 输出、PPM 输入捕获 |
+| 类别       | 内容                                                                                                    |
+| ---------- | ------------------------------------------------------------------------------------------------------- |
+| 姿态解算   | Madgwick AHRS，支持陀螺 / 6 轴 IMU / 9 轴 MARG 三档切换，磁力计可用性动态判定                           |
+| 控制       | 姿态外环（角度→角速度）+ 角速度内环（串级 PID），500 Hz 内环 / 200 Hz 外环；D 项低通、积分限幅与抗饱和 |
+| 定高辅助   | 气压计 + 超声波融合，CH7 一键起飞 / 定高 / 缓降状态机，含落地检测与悬停油门自学习                       |
+| 安全层     | 独立 SafetyTask 状态机（DISARMED / ARM_PENDING / ARMED / FATAL），链路失效与超温超倾判据，看门狗门控    |
+| 传感器校准 | 陀螺零偏、加计零偏/比例、磁力计硬磁/软磁，Flash 掉电保存                                                |
+| 通信       | 匿名上位机 V7 协议（蓝牙 SPP），姿态/传感器实时上报 + PID 参数在线读写 + 日志窗口                       |
+| 外设驱动   | I²C 异步事务（审计 + 降级 + 总线解锁自恢复）、UART 循环 DMA、PWM 输出、PPM 输入捕获                    |
 
 ---
 
@@ -45,22 +45,22 @@
 
 ### 引脚分配
 
-| 引脚 | 功能 | 说明 |
-|---|---|---|
-| PA0 | TIM2_CH1 | PPM 遥控输入捕获 |
-| PA1 | TIM2_CH2 | HC-SR04 ECHO |
-| PA2 / PA3 | USART2_TX / RX | 预留调试串口 |
-| PA5 | GPIO 输出 | 板载绿色 LED |
-| PA13 / PA14 | SWDIO / SWCLK | 下载调试 |
-| PB3 / PB10 | I2C2_SDA / SCL | OLED |
-| PB6 / PB7 | USART1_TX / RX（`BT_TX` / `BT_RX`） | **HC-05 蓝牙 → 匿名上位机** |
-| PB8 / PB9 | I2C1_SCL / SDA（`IMU_SCL` / `IMU_SDA`） | **GY-87（MPU6050 + HMC5883L）** |
-| PB12–PB15 | SPI2_NSS / SCK / MISO / MOSI | 预留 |
-| PC0 | GPIO 输出 | HC-SR04 TRIG |
-| PC6–PC9 | TIM3_CH1–CH4 | 电机 PWM1–PWM4 |
-| PC13 | EXTI13 | 板载按键 |
-| PD2 | GPIO 输出 | 蜂鸣器 |
-| PH0 / PH1 | HSE | 8 MHz 晶振 |
+| 引脚        | 功能                                        | 说明                                  |
+| ----------- | ------------------------------------------- | ------------------------------------- |
+| PA0         | TIM2_CH1                                    | PPM 遥控输入捕获                      |
+| PA1         | TIM2_CH2                                    | HC-SR04 ECHO                          |
+| PA2 / PA3   | USART2_TX / RX                              | 预留调试串口                          |
+| PA5         | GPIO 输出                                   | 板载绿色 LED                          |
+| PA13 / PA14 | SWDIO / SWCLK                               | 下载调试                              |
+| PB3 / PB10  | I2C2_SDA / SCL                              | OLED                                  |
+| PB6 / PB7   | USART1_TX / RX（`BT_TX` / `BT_RX`）     | **HC-05 蓝牙 → 匿名上位机**    |
+| PB8 / PB9   | I2C1_SCL / SDA（`IMU_SCL` / `IMU_SDA`） | **GY-87（MPU6050 + HMC5883L）** |
+| PB12–PB15  | SPI2_NSS / SCK / MISO / MOSI                | 预留                                  |
+| PC0         | GPIO 输出                                   | HC-SR04 TRIG                          |
+| PC6–PC9    | TIM3_CH1–CH4                               | 电机 PWM1–PWM4                       |
+| PC13        | EXTI13                                      | 板载按键                              |
+| PD2         | GPIO 输出                                   | 蜂鸣器                                |
+| PH0 / PH1   | HSE                                         | 8 MHz 晶振                            |
 
 > 串口 1 默认 **115200 8N1**。使用 HC-05 时，模块自身的 UART 波特率必须同步改为 115200，否则上位机收到的将是乱码。
 
@@ -70,60 +70,100 @@
 
 数据以"快照 + 通道"方式在任务间单向流动，通道使用 seqlock 双缓冲（`atomic_publish.c`），读者无阻塞、无锁、无撕裂。
 
+```mermaid
+flowchart TB
+    subgraph SRC["输入"]
+        IMU["GY-87<br/>MPU6050 + HMC5883L"]
+        BARO["BMP180 气压计"]
+        US["HC-SR04 超声波"]
+        PPM["PPM 接收机"]
+        BT["HC-05 蓝牙"]
+    end
+
+    subgraph TASK["任务层"]
+        BUS["BusTask<br/>1 kHz 采样"]
+        ATT["AttitudeTask<br/>200 Hz · Madgwick"]
+        ALT["Altitude<br/>气压 + 超声融合"]
+        RC["RcTask<br/>PPM 解析"]
+        SAFE["SafetyTask<br/>10 ms 仲裁"]
+        CTL["ControlTask<br/>500 Hz · 串级 PID"]
+        COMM["CommTask<br/>10 ms 协议调度"]
+    end
+
+    PWM["电机 PWM1–4<br/>TIM3"]
+
+    IMU -->|I2C1| BUS
+    BARO -->|I2C1| BUS
+    US -->|TIM2 捕获| BUS
+    PPM -->|TIM2 捕获| RC
+
+    BUS -->|"g_chan_sensor"| ATT
+    BUS -->|"g_chan_altitude"| ALT
+    ATT -->|"g_chan_attitude"| CTL
+    ATT -->|"姿态快照"| SAFE
+    ALT -->|"高度快照"| CTL
+    RC -->|"g_chan_rc"| CTL
+    RC -->|"遥控快照"| SAFE
+    SAFE -->|"授权字"| CTL
+    CTL --> PWM
+    CTL -->|"g_chan_ctrl"| COMM
+    BT <-->|"USART1 · 115200"| COMM
+
+    classDef off stroke-dasharray: 5 5,opacity:0.55
+    class CTL,RC off
 ```
-      ┌──────────────┐  g_chan_sensor   ┌───────────────┐  g_chan_attitude
-      │   BusTask    │ ───────────────▶ │ AttitudeTask  │ ─────────────────┐
-      │ 1 kHz 采样   │                  │  Madgwick     │                  │
-      └──────┬───────┘                  └───────────────┘                  ▼
-             │ g_chan_altitude                                     ┌───────────────┐
-             ▼                                                     │ ControlTask   │
-      ┌──────────────┐                                             │ 串级 PID 500Hz│
-      │ Altitude     │ ──────────────────────────────────────────▶ └──────┬────────┘
-      │ 气压 + 超声   │                                                    │ Motor_Mix
-      └──────────────┘                                                    ▼
-                                                                    PWM1–4 (TIM3)
-      ┌──────────────┐  g_chan_rc     ┌───────────────┐
-      │   RcTask     │ ─────────────▶ │ SafetyTask    │ ── 授权字 → ControlTask
-      │  PPM 解析    │                │ 状态机 + 喂狗 │
-      └──────────────┘                └───────────────┘
-             ▲                               ▲
-             │                        g_chan_ctrl / 姿态 / RC
-      ┌──────────────┐                 ┌───────────────┐
-      │ USART1 RX    │                 │  CommTask     │ ──▶ 匿名 V7 上行帧
-      │ 循环 DMA     │ ──────────────▶ │ 10 ms 调度    │ ◀── 参数读写 / DBG 指令
-      └──────────────┘   环形缓冲      └───────────────┘        TX 块池 + DMA
-```
+
+> 虚线框标注 `ControlTask` / `RcTask`：台架测试模式下未创建，恢复飞行调试后启用（见 [任务与调度](#任务与调度)）。
 
 ### 主要模块
 
-| 文件 | 职责 |
-|---|---|
-| `Core/Src/usart.c` | USART1 循环 DMA 接收 + 单调写计数环形缓冲；TX 静态块池 + 队列 + DMA 链式发送 |
-| `Mydrive/Src/anonym.c` | 匿名协议 V7 状态机、上行帧组包、参数读写（PID / 校准 / DBG） |
-| `Mydrive/Src/gy87.c` | MPU6050 六轴 + HMC5883L 磁力计驱动，量程与 DLPF 配置 |
-| `Mydrive/Src/i2c_adapter.c` | I²C 异步事务封装：任务通知同步、链路审计、降级判定、9 时钟总线解锁恢复 |
-| `Mydrive/Src/Madgwick.c` | 姿态融合三档降级策略与欧拉角输出 |
-| `Mydrive/Src/calib.c` | 校准参数管理，Flash Sector 7 整页持久化（写前临时放宽 IWDG） |
-| `Mydrive/Src/safety.c` | 安全状态机、故障位累积、看门狗门控 |
-| `Mydrive/Src/atomic_publish.c` | seqlock 双缓冲通道，任务间无锁快照传递 |
-| `Mydrive/Src/fc_time.c` | 基于 DWT CYCCNT 的微秒时间戳（无回卷累计误差） |
-| `Mydrive/Src/altitude.c` `bmp180.c` `hcsr04.c` | 气压 / 超声测距与高度融合 |
-| `Mydrive/Src/pid.c` `motor.c` `rc.c` `ppm.c` | PID 运算、混控输出、遥控归一化、PPM 捕获 |
+| 文件                                                 | 职责                                                                         |
+| ---------------------------------------------------- | ---------------------------------------------------------------------------- |
+| `Core/Src/usart.c`                                 | USART1 循环 DMA 接收 + 单调写计数环形缓冲；TX 静态块池 + 队列 + DMA 链式发送 |
+| `Mydrive/Src/anonym.c`                             | 匿名协议 V7 状态机、上行帧组包、参数读写（PID / 校准 / DBG）                 |
+| `Mydrive/Src/gy87.c`                               | MPU6050 六轴 + HMC5883L 磁力计驱动，量程与 DLPF 配置                         |
+| `Mydrive/Src/i2c_adapter.c`                        | I²C 异步事务封装：任务通知同步、链路审计、降级判定、9 时钟总线解锁恢复      |
+| `Mydrive/Src/Madgwick.c`                           | 姿态融合三档降级策略与欧拉角输出                                             |
+| `Mydrive/Src/calib.c`                              | 校准参数管理，Flash Sector 7 整页持久化（写前临时放宽 IWDG）                 |
+| `Mydrive/Src/safety.c`                             | 安全状态机、故障位累积、看门狗门控                                           |
+| `Mydrive/Src/atomic_publish.c`                     | seqlock 双缓冲通道，任务间无锁快照传递                                       |
+| `Mydrive/Src/fc_time.c`                            | 基于 DWT CYCCNT 的微秒时间戳（无回卷累计误差）                               |
+| `Mydrive/Src/altitude.c` `bmp180.c` `hcsr04.c` | 气压 / 超声测距与高度融合                                                    |
+| `Mydrive/Src/pid.c` `motor.c` `rc.c` `ppm.c` | PID 运算、混控输出、遥控归一化、PPM 捕获                                     |
+
+### 控制回路
+
+外环（角度）与内环（角速度）均以 500 Hz 运行，外环目标由 RC 摇杆或上位机 DBG 指令给出，内环输出归一化扭矩后送混控：
+
+```mermaid
+flowchart LR
+    TGT["目标姿态<br/>RC 摇杆 / DBG 指令"] --> S1(("Σ"))
+    S1 --> OUTER["角度环 PID<br/>deg → deg/s"]
+    OUTER --> S2(("Σ"))
+    S2 --> INNER["角速度环 PID<br/>deg/s → ±1"]
+    INNER --> MIX["Motor_Mix<br/>油门 + 三轴扭矩"]
+    MIX --> PWM["PWM1–4"]
+    ATT["姿态欧拉角<br/>g_chan_attitude"] -.->|负反馈| S1
+    GYRO["陀螺角速度<br/>g_chan_sensor"] -.->|负反馈| S2
+
+    classDef fb stroke-dasharray: 4 4,opacity:0.7
+    class ATT,GYRO fb
+```
 
 ---
 
 ## 任务与调度
 
-| 任务 | 优先级 | 栈（字） | 周期 | 职责 |
-|---|---|---|---|---|
-| `ControlTask` | Realtime | 512 | 2 ms（500 Hz） | 串级 PID、定高辅助、混控输出 ⚠️ 当前未创建 |
-| `AttitudeTask` | High | 768 | 5 ms（200 Hz，事件驱动） | Madgwick 解算并发布姿态快照 |
-| `SafetyTask` | AboveNormal4 | 384 | 10 ms | 安全仲裁、状态机、喂狗 |
-| `RcTask` | AboveNormal2 | 320 | 事件驱动 | PPM 解析与遥控快照 ⚠️ 当前未创建 |
-| `BusTask` | Normal4 | 512 | 1 ms | IMU 采样（磁力计 10 Hz 抽取）、高度融合 |
-| `CommTask` | Normal | 320 | 10 ms | 排空 RX 环形缓冲、协议解析、周期上报、TX 泵 |
-| `DisplayTask` | BelowNormal | 256 | — | OLED 显示（占位） |
-| `StatusTask` | Low | 192 | 200 ms | 堆余量与栈水位诊断 |
+| 任务             | 优先级       | 栈（字） | 周期                     | 职责                                         |
+| ---------------- | ------------ | -------- | ------------------------ | -------------------------------------------- |
+| `ControlTask`  | Realtime     | 512      | 2 ms（500 Hz）           | 串级 PID、定高辅助、混控输出 ⚠️ 当前未创建 |
+| `AttitudeTask` | High         | 768      | 5 ms（200 Hz，事件驱动） | Madgwick 解算并发布姿态快照                  |
+| `SafetyTask`   | AboveNormal4 | 384      | 10 ms                    | 安全仲裁、状态机、喂狗                       |
+| `RcTask`       | AboveNormal2 | 320      | 事件驱动                 | PPM 解析与遥控快照 ⚠️ 当前未创建           |
+| `BusTask`      | Normal4      | 512      | 1 ms                     | IMU 采样（磁力计 10 Hz 抽取）、高度融合      |
+| `CommTask`     | Normal       | 320      | 10 ms                    | 排空 RX 环形缓冲、协议解析、周期上报、TX 泵  |
+| `DisplayTask`  | BelowNormal  | 256      | —                       | OLED 显示（占位）                            |
+| `StatusTask`   | Low          | 192      | 200 ms                   | 堆余量与栈水位诊断                           |
 
 > ⚠️ **台架测试模式**：`MX_FREERTOS_Init()` 中 `ControlTask` 与 `RcTask` 的创建语句当前被注释掉（无接收机、仅验证蓝牙与 IMU 链路）。恢复飞行调试前需取消注释，并同步接回 `Safety_Step()` 的 `rc` 参数。
 
@@ -133,43 +173,41 @@
 
 ### 帧格式（匿名协议 V7.15）
 
-```
-┌──────┬─────────┬──────┬──────┬──────────┬──────┬──────┐
-│ HEAD │ D_ADDR  │  ID  │ LEN  │   DATA   │  SC  │  AC  │
-│ 0xAA │  1 Byte │1 Byte│1 Byte│  n Byte  │1 Byte│1 Byte│
-└──────┴─────────┴──────┴──────┴──────────┴──────┴──────┘
-```
+| 字段 | HEAD | D_ADDR | ID | LEN | DATA | SC | AC |
+|---|---|---|---|---|---|---|---|
+| 长度 | 1 B | 1 B | 1 B | 1 B | n B | 1 B | 1 B |
+| 说明 | 固定 `0xAA` | 目标地址 | 功能码 | 数据长度 | 数据内容 | 和校验 | 附加校验 |
 
 - 数据区小端；`SC` 为从 HEAD 到 DATA 末字节的 8 位累加和，`AC` 为 `SC` 的逐字节累加和。
 - **安全通信**：参数写入（`0xE2`）、参数命令（`0xE0`）、参数读取请求（`0xE1`）等非显示类帧，飞控必须回 `0x00` 数据校验帧（携带原帧 `ID/SC/AC`），否则上位机会重试直至超时。
 
 ### 上行帧
 
-| ID | 内容 | 周期 |
-|---|---|---|
-| `0x01` | 加速度 + 角速度（`int16`） + 震动状态 | 100 ms |
-| `0x02` | 磁力计原始值 + 气压高度 + 温度 + 状态位 | 100 ms |
-| `0x03` | 欧拉角（`×100`，单位度） + 融合状态 | 100 ms |
-| `0x04` | 四元数（`×10000`） + 融合状态 | 10 ms |
-| `0xF1` | 调参波形：时间戳、姿态角、角速度、目标量、状态位 | 10 ms |
-| `0xA0` | LOG 文本（颜色 + ASCII 字符串） | 事件触发 |
+| ID       | 内容                                             | 周期     |
+| -------- | ------------------------------------------------ | -------- |
+| `0x01` | 加速度 + 角速度（`int16`） + 震动状态          | 100 ms   |
+| `0x02` | 磁力计原始值 + 气压高度 + 温度 + 状态位          | 100 ms   |
+| `0x03` | 欧拉角（`×100`，单位度） + 融合状态           | 100 ms   |
+| `0x04` | 四元数（`×10000`） + 融合状态                 | 10 ms    |
+| `0xF1` | 调参波形：时间戳、姿态角、角速度、目标量、状态位 | 10 ms    |
+| `0xA0` | LOG 文本（颜色 + ASCII 字符串）                  | 事件触发 |
 
 ### 参数 ID 分配
 
-| ID 段 | 含义 | 单位换算（协议值 = 物理量 × 倍率） |
-|---|---|---|
-| 2000–2002 | Roll 角度环 P / I / D | ×100000 |
-| 2003–2005 | Pitch 角度环 P / I / D | ×100000 |
-| 2006–2008 | Yaw 角度环 P / I / D | ×100000 |
-| 2009–2011 | Roll 角速度环 P / I / D | ×100000 |
-| 2012–2014 | Pitch 角速度环 P / I / D | ×100000 |
-| 2015–2017 | Yaw 角速度环 P / I / D | ×100000 |
-| 2018–2020 | 高度环 P / I / D | ×100000 |
-| 1000–1002 | 加速度零偏 X / Y / Z | ×1e5 |
-| 1003–1005 | 加速度比例 X / Y / Z | ×1e5 |
-| 1006–1014 | 磁力计软磁矩阵（行优先 9 元） | ×1e5 |
-| 1015–1017 | 磁力计硬磁偏置 X / Y / Z | ×1e5 |
-| 1018–1020 | 陀螺零偏 X / Y / Z | ×1e5 |
+| ID 段      | 含义                          | 单位换算（协议值 = 物理量 × 倍率） |
+| ---------- | ----------------------------- | ----------------------------------- |
+| 2000–2002 | Roll 角度环 P / I / D         | ×100000                            |
+| 2003–2005 | Pitch 角度环 P / I / D        | ×100000                            |
+| 2006–2008 | Yaw 角度环 P / I / D          | ×100000                            |
+| 2009–2011 | Roll 角速度环 P / I / D       | ×100000                            |
+| 2012–2014 | Pitch 角速度环 P / I / D      | ×100000                            |
+| 2015–2017 | Yaw 角速度环 P / I / D        | ×100000                            |
+| 2018–2020 | 高度环 P / I / D              | ×100000                            |
+| 1000–1002 | 加速度零偏 X / Y / Z          | ×1e5                               |
+| 1003–1005 | 加速度比例 X / Y / Z          | ×1e5                               |
+| 1006–1014 | 磁力计软磁矩阵（行优先 9 元） | ×1e5                               |
+| 1015–1017 | 磁力计硬磁偏置 X / Y / Z      | ×1e5                               |
+| 1018–1020 | 陀螺零偏 X / Y / Z            | ×1e5                               |
 
 - 未使用的 ID 在读回时返回 `0x80000000`，上位机据此置灰对应参数行。
 - 校准参数（1000–1020）在组末 ID 写入时触发一次 Flash 落盘。
@@ -202,12 +240,12 @@ F401-self/
 
 ### 环境要求
 
-| 工具 | 版本 |
-|---|---|
-| Keil MDK-ARM | 5.32 及以上（ARM Compiler 5） |
-| STM32CubeMX | 6.16.1（如需重新生成工程） |
-| STM32Cube FW_F4 | V1.28.3 |
-| 调试器 | ST-Link（SWD） |
+| 工具            | 版本                          |
+| --------------- | ----------------------------- |
+| Keil MDK-ARM    | 5.32 及以上（ARM Compiler 5） |
+| STM32CubeMX     | 6.16.1（如需重新生成工程）    |
+| STM32Cube FW_F4 | V1.28.3                       |
+| 调试器          | ST-Link（SWD）                |
 
 ### 编译
 
