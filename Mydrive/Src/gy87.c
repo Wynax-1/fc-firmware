@@ -9,13 +9,19 @@
 
 /* 磁力计读取抽取：1 kHz 下每 100 拍读一次 = 10 Hz */
 #define MAG_DIVIDER        100u
+/* 磁力计连续失败多少次判不健康（随后 Madgwick 自动退回 6 轴） */
+#define MAG_FAIL_DEGRADE   3u
 
 /** 磁力计最近一次读数（原始值） */
 static float s_mx = 0.0f;
 static float s_my = 0.0f;
 static float s_mz = 0.0f;
-/** 磁力计是否可用 */
-static bool  s_mag_ok = false;
+/** 磁力计初始化是否成功（硬件在位） */
+static bool  s_mag_ready = false;
+/** 磁力计最近读取是否健康；连续失败达阈值后置 false */
+static bool  s_mag_healthy = false;
+/** 磁力计连续读取失败计数 */
+static uint8_t s_mag_fail_run = 0u;
 /** 采样计数，用于磁力计抽取 */
 static uint32_t s_div = 0u;
 
@@ -72,11 +78,14 @@ I2cResult GY87_Init(void)
     (void)RegWrite(GY87_MPU_ADDR, MPU_REG_INT_PIN_CFG, 0x02u);  /* BYPASS_EN       */
 
     /* ---- 6. 磁力计（可选） ---- */
-    s_mag_ok = false;
+    s_mag_ready    = false;
+    s_mag_healthy  = false;
+    s_mag_fail_run = 0u;
     if (RegWrite(GY87_HMC_ADDR, HMC_REG_CRA, 0x70u) == I2C_OK) {   /* 8 次平均，15 Hz */
         if (RegWrite(GY87_HMC_ADDR, HMC_REG_CRB, 0x20u) == I2C_OK) { /* 增益 1.3 Ga */
             if (RegWrite(GY87_HMC_ADDR, HMC_REG_MODE, 0x00u) == I2C_OK) { /* 连续测量 */
-                s_mag_ok = true;
+                s_mag_ready   = true;
+                s_mag_healthy = true;
             }
         }
     }
@@ -101,7 +110,7 @@ I2cResult GY87_Sample(SensorData *out, fc_usec_t now)
 
     out->stamp.usec = now;
     out->valid      = false;
-    out->mag_ok     = s_mag_ok;
+    out->mag_ok     = s_mag_ready && s_mag_healthy;
 
     /* ---- 1. 一次性读 acc(6) + temp(2) + gyro(6) = 14 字节 ---- */
     r = I2C_BusRead(GY87_MPU_ADDR, MPU_REG_ACCEL_XOUT_H, buf, 14u, 5u);
@@ -132,7 +141,7 @@ I2cResult GY87_Sample(SensorData *out, fc_usec_t now)
 
     /* ---- 2. 磁力计抽取读取 ---- */
     s_div++;
-    if (s_mag_ok && (s_div >= MAG_DIVIDER)) {
+    if (s_mag_ready && (s_div >= MAG_DIVIDER)) {
         uint8_t mbuf[6];
         s_div = 0u;
         if (I2C_BusRead(GY87_HMC_ADDR, HMC_REG_DATAX, mbuf, 6u, 5u) == I2C_OK) {
@@ -144,14 +153,22 @@ I2cResult GY87_Sample(SensorData *out, fc_usec_t now)
             s_mx = -(float)mx;
             s_my =  (float)my;
             s_mz = -(float)mz;
+
+            s_mag_fail_run = 0u;
+            s_mag_healthy  = true;
+        } else if (s_mag_fail_run < 0xFFu) {
+            /* 连续失败达阈值：标记不健康，Madgwick 自动退回 6 轴；
+             * 读取成功的下一拍即恢复（磁力计更新率本来就只有 10 Hz） */
+            if (++s_mag_fail_run >= MAG_FAIL_DEGRADE) {
+                s_mag_healthy = false;
+            }
         }
-        /* 读失败保留上一次的值：磁力计更新率本来就只有 10 Hz */
     }
 
     out->mx     = s_mx;
     out->my     = s_my;
     out->mz     = s_mz;
-    out->mag_ok = s_mag_ok;
+    out->mag_ok = s_mag_ready && s_mag_healthy;
     out->valid  = true;
 
 

@@ -2,7 +2,7 @@
 
 基于 **STM32F401RET6** 的四旋翼飞控固件，采用 FreeRTOS + CMSIS-RTOS v2 架构，集成 Madgwick 姿态解算、串级 PID、定高辅助与匿名上位机 V7 通信协议。
 
-> 状态：开发中（地面调试阶段）。部分任务当前以"台架测试模式"运行，详见 [任务与调度](#任务与调度)。
+> 状态：开发中（地面调试阶段）。全部任务链路已启用（含 `ControlTask` / `RcTask`），试飞前仍需拆除桨叶完成台架验证。
 
 ---
 
@@ -108,12 +108,7 @@ flowchart TB
     CTL --> PWM
     CTL -->|"g_chan_ctrl"| COMM
     BT <-->|"USART1 · 115200"| COMM
-
-    classDef off stroke-dasharray: 5 5,opacity:0.55
-    class CTL,RC off
 ```
-
-> 虚线框标注 `ControlTask` / `RcTask`：台架测试模式下未创建，恢复飞行调试后启用（见 [任务与调度](#任务与调度)）。
 
 ### 主要模块
 
@@ -156,16 +151,14 @@ flowchart LR
 
 | 任务             | 优先级       | 栈（字） | 周期                     | 职责                                         |
 | ---------------- | ------------ | -------- | ------------------------ | -------------------------------------------- |
-| `ControlTask`  | Realtime     | 512      | 2 ms（500 Hz）           | 串级 PID、定高辅助、混控输出 ⚠️ 当前未创建 |
+| `ControlTask`  | Realtime     | 512      | 2 ms（500 Hz）           | 串级 PID、定高辅助、混控输出                 |
 | `AttitudeTask` | High         | 768      | 5 ms（200 Hz，事件驱动） | Madgwick 解算并发布姿态快照                  |
 | `SafetyTask`   | AboveNormal4 | 384      | 10 ms                    | 安全仲裁、状态机、喂狗                       |
-| `RcTask`       | AboveNormal2 | 320      | 事件驱动                 | PPM 解析与遥控快照 ⚠️ 当前未创建           |
+| `RcTask`       | AboveNormal2 | 320      | 事件驱动                 | PPM 解析与遥控快照                           |
 | `BusTask`      | Normal4      | 512      | 1 ms                     | IMU 采样（磁力计 10 Hz 抽取）、高度融合      |
 | `CommTask`     | Normal       | 320      | 10 ms                    | 排空 RX 环形缓冲、协议解析、周期上报、TX 泵  |
 | `DisplayTask`  | BelowNormal  | 256      | —                       | OLED 显示（占位）                            |
 | `StatusTask`   | Low          | 192      | 200 ms                   | 堆余量与栈水位诊断                           |
-
-> ⚠️ **台架测试模式**：`MX_FREERTOS_Init()` 中 `ControlTask` 与 `RcTask` 的创建语句当前被注释掉（无接收机、仅验证蓝牙与 IMU 链路）。恢复飞行调试前需取消注释，并同步接回 `Safety_Step()` 的 `rc` 参数。
 
 ---
 
@@ -173,9 +166,9 @@ flowchart LR
 
 ### 帧格式（匿名协议 V7.15）
 
-| 字段 | HEAD | D_ADDR | ID | LEN | DATA | SC | AC |
-|---|---|---|---|---|---|---|---|
-| 长度 | 1 B | 1 B | 1 B | 1 B | n B | 1 B | 1 B |
+| 字段 | HEAD          | D_ADDR   | ID     | LEN      | DATA     | SC     | AC       |
+| ---- | ------------- | -------- | ------ | -------- | -------- | ------ | -------- |
+| 长度 | 1 B           | 1 B      | 1 B    | 1 B      | n B      | 1 B    | 1 B      |
 | 说明 | 固定 `0xAA` | 目标地址 | 功能码 | 数据长度 | 数据内容 | 和校验 | 附加校验 |
 
 - 数据区小端；`SC` 为从 HEAD 到 DATA 末字节的 8 位累加和，`AC` 为 `SC` 的逐字节累加和。
@@ -271,7 +264,7 @@ F401-self/
 
 ## 开发约定
 
-- **中断优先级**：所有调用 RTOS API 的中断优先级必须数值 ≥ 5（`configLIBRARY_MAX_SYSCALL_INTERRUPT_PRIORITY`）。当前 USART1 = 6、DMA2 Stream2/7 = 5、I²C1 = 6。
+- **中断优先级**：所有调用 RTOS API 的中断优先级必须数值 ≥ 5（`configLIBRARY_MAX_SYSCALL_INTERRUPT_PRIORITY`）。当前 TIM2 = 5、I²C1 EV/ER = 5、USART1 = 6、DMA2 Stream2 = 6、DMA2 Stream7 = 7；TIM3 / EXTI15_10（B1）中断已关闭；SysTick / PendSV / TIM4 = 15。
 - **I²C 单写者**：I²C1 总线只允许 `BusTask` 直接触碰；其他任务改寄存器须走 `I2C_QueueSubmit()` 慢路径队列。
 - **无运行期动态分配**：TX 使用静态块池，队列仅存指针，禁止在任务中 `malloc`。
 - **数据结构传递**：跨任务共享一律通过 `FcChan_Publish` / `FcChan_Read` 快照通道，不共享裸指针。
@@ -282,7 +275,6 @@ F401-self/
 
 ## 已知限制
 
-- `ControlTask` / `RcTask` 在 `MX_FREERTOS_Init()` 中被注释，当前为台架调试固件，**不具备飞行能力**。
 - 航点读写帧（`0x60` / `0x61`）与校准命令帧（`0xE0` 的校准 CID）尚未实现，`0xE0` 仅回校验帧。
 - PID 参数仅驻留 RAM，掉电丢失，需上位机重新下发。
 - `DisplayTask` 尚未接入 OLED 驱动。
@@ -298,9 +290,3 @@ F401-self/
 - Madgwick, S. *An efficient orientation filter for inertial and inertial/magnetic sensor arrays*, 2010.
 - STM32F401RE Datasheet / Reference Manual RM0368
 - FreeRTOS Kernel Documentation
-
----
-
-## 许可证
-
-本项目尚未选择开源许可证。在添加 `LICENSE` 文件前，默认保留所有权利（All rights reserved）。

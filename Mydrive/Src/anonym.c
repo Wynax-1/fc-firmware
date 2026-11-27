@@ -32,8 +32,8 @@
 /* 调试控制参数（ID 29~33，RAM 临时，不落盘） */
 #define DBG_ID_MODE        29u   /* 0=DISABLED 1=ATT_HOLD 2=RATE */
 #define DBG_ID_THROTTLE    30u   /* 测试油门 µs，1000~2000 */
-#define DBG_ID_TGT_ROLL    31u   /* 目标 Roll 0.01°，±4500 即 ±45° */
-#define DBG_ID_TGT_PITCH   32u   /* 目标 Pitch 0.01°，±4500 即 ±45° */
+#define DBG_ID_TGT_ROLL    31u   /* 目标 Roll 0.01°，±4000 即 ±40°（与 ATT_TILT_HARD_DEG 一致） */
+#define DBG_ID_TGT_PITCH   32u   /* 目标 Pitch 0.01°，±4000 即 ±40°（与 ATT_TILT_HARD_DEG 一致） */
 #define DBG_ID_TGT_YAW_R   33u   /* 目标 Yaw Rate 0.01°/s */
 
 static volatile int32_t s_dbg_mode       = 0;
@@ -132,8 +132,8 @@ static bool ParamSet(uint16_t id, int32_t val)
 	}
 	if (id == DBG_ID_MODE)      { s_dbg_mode      = (val < 0) ? 0 : (val > 2 ? 2 : val);   return true; }
 	if (id == DBG_ID_THROTTLE)  { s_dbg_throttle  = (val < 1000) ? 1000 : (val > 2000 ? 2000 : val); return true; }
-	if (id == DBG_ID_TGT_ROLL)  { s_dbg_tgt_roll  = (val < -4500) ? -4500 : (val > 4500 ? 4500 : val); return true; }
-	if (id == DBG_ID_TGT_PITCH) { s_dbg_tgt_pitch = (val < -4500) ? -4500 : (val > 4500 ? 4500 : val); return true; }
+	if (id == DBG_ID_TGT_ROLL)  { s_dbg_tgt_roll  = (val < -4000) ? -4000 : (val > 4000 ? 4000 : val); return true; }
+	if (id == DBG_ID_TGT_PITCH) { s_dbg_tgt_pitch = (val < -4000) ? -4000 : (val > 4000 ? 4000 : val); return true; }
 	if (id == DBG_ID_TGT_YAW_R) { s_dbg_tgt_yaw_r = (val < -2000) ? -2000 : (val > 2000 ? 2000 : val); return true; }
 	return false;
 }
@@ -301,11 +301,11 @@ typedef enum {
     RX_AC
 } AnonRxState;
 
-static AnonRxState s_rx_state = RX_HEAD;
-static uint8_t    s_buf[ANON_RX_BUF];
-static uint8_t    s_idx = 0u;
-static uint8_t    s_len = 0u;
-static uint8_t    s_data_idx = 0u;
+static AnonRxState s_rx_state = RX_HEAD;  /* 当前状态机位置（HEAD/DADDR/ID/LEN/DATA/SC/AC） */
+static uint8_t    s_buf[ANON_RX_BUF];     /* 帧组装缓冲：HEAD + D_ADDR + ID + LEN + DATA + SC + AC */
+static uint8_t    s_idx = 0u;             /* s_buf 当前写入位置 */
+static uint8_t    s_len = 0u;             /* 当前帧 LEN 字段（数据区字节数） */
+static uint8_t    s_data_idx = 0u;        /* 当前帧已收到的 DATA 字节数 */
 
 /**
  * @brief  向匿名协议接收状态机喂入串口字节流

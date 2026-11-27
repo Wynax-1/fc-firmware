@@ -16,19 +16,26 @@ static bool      s_pub_last_valid = false;
 
 static float NormStick(uint16_t us)
 {
-    float v = ((float)us - 1500.0f) / 500.0f;
+    /* 以标定中点为界分段线性：中点到两端各占满半程，
+     * 端点偏差靠限幅吸收，回中偏差靠死区吸收 */
+    float v;
+    if ((int32_t)us >= (int32_t)RC_CAL_MID_US) {
+        v = (float)((int32_t)us - (int32_t)RC_CAL_MID_US)
+          / (float)((int32_t)RC_CAL_MAX_US - (int32_t)RC_CAL_MID_US);
+    } else {
+        v = (float)((int32_t)us - (int32_t)RC_CAL_MID_US)
+          / (float)((int32_t)RC_CAL_MID_US - (int32_t)RC_CAL_MIN_US);
+    }
     if (v >  1.0f) { v =  1.0f; }
     if (v < -1.0f) { v = -1.0f; }
-    if (fabsf(v) < 0.05f) { v = 0.0f; }
+    if (fabsf(v) < RC_STICK_DZ_ND) { v = 0.0f; }
     return v;
 }
 
 static float NormThr(uint16_t us)
 {
-    float v = ((float)us - 1000.0f) / 1000.0f;
-    if (v < 0.0f) { v = 0.0f; }
-    if (v > 1.0f) { v = 1.0f; }
-    return v;
+    /* 与安全层共用同一归一化（rc.h Rc_ThrottleNorm） */
+    return Rc_ThrottleNorm(us);
 }
 
 /* ---- 从快照归一化（生产路径）---- */
@@ -36,14 +43,15 @@ bool Rc_Normalize(const RcCommandSnapshot *raw, RcNorm *out)
 {
     if ((raw == NULL) || (out == NULL) || (!raw->valid)) { return false; }
 
-    out->ail    = NormStick(raw->ch[RC_AIL]);
-    out->ele    = NormStick(raw->ch[RC_ELE]);
+    out->roll   = NormStick(raw->ch[RC_AIL]);
+    out->pitch  = NormStick(raw->ch[RC_ELE]);
     out->thr    = NormThr  (raw->ch[RC_THR]);
-    out->rud    = NormStick(raw->ch[RC_RUD]);
-    out->aux[0] = NormStick(raw->ch[RC_AUX1]);
-    out->aux[1] = NormStick(raw->ch[RC_AUX2]);
-    out->aux[2] = NormStick(raw->ch[RC_AUX3]);
-    out->aux[3] = NormStick(raw->ch[RC_AUX4]);
+    out->yaw    = NormStick(raw->ch[RC_RUD]);
+    /* 辅助通道保留原始 µs：开关/旋钮阈值在 1000~2000 域直接判定 */
+    out->aux_us[0] = raw->ch[RC_AUX1];
+    out->aux_us[1] = raw->ch[RC_AUX2];
+    out->aux_us[2] = raw->ch[RC_AUX3];
+    out->aux_us[3] = raw->ch[RC_AUX4];
     return true;
 }
 
@@ -74,14 +82,14 @@ void Rc_TaskStep(void)
         /* 用局部变量组装完一次赋值，缩短撕裂窗口（虽然生产路径已改用快照，
          * 但调试用 getter 仍读 s_norm，保持一致性） */
         RcNorm tmp;
-        tmp.ail    = NormStick(raw[RC_AIL]);
-        tmp.ele    = NormStick(raw[RC_ELE]);
+        tmp.roll   = NormStick(raw[RC_AIL]);
+        tmp.pitch  = NormStick(raw[RC_ELE]);
         tmp.thr    = NormThr  (raw[RC_THR]);
-        tmp.rud    = NormStick(raw[RC_RUD]);
-        tmp.aux[0] = NormStick(raw[RC_AUX1]);
-        tmp.aux[1] = NormStick(raw[RC_AUX2]);
-        tmp.aux[2] = NormStick(raw[RC_AUX3]);
-        tmp.aux[3] = NormStick(raw[RC_AUX4]);
+        tmp.yaw    = NormStick(raw[RC_RUD]);
+        tmp.aux_us[0] = raw[RC_AUX1];
+        tmp.aux_us[1] = raw[RC_AUX2];
+        tmp.aux_us[2] = raw[RC_AUX3];
+        tmp.aux_us[3] = raw[RC_AUX4];
         s_norm = tmp;
     }
 
@@ -117,7 +125,7 @@ bool Rc_GetNorm(RcNorm *out)
 }
 
 bool Rc_IsAlive(void)    { return s_alive; }
-/* 回中油门解锁窗口判据（与 safety.c 的 µs 域判据等价） */
+/* 油门解锁位判据（与 safety.c 的 µs 域判据等价；窗口随 FEATURE_ALT_ASSIST 切换） */
 bool Rc_ThrottleLow(void){ return s_alive
                             && (s_norm.thr >= RC_THR_ARM_WIN_LO_N)
                             && (s_norm.thr <= RC_THR_ARM_WIN_HI_N); }

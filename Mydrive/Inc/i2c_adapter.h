@@ -28,6 +28,16 @@ void I2C_QueueDrain(void);
 
 bool I2C_AuditDegraded(void);
 
+/**
+ * @brief  查询某个从设备是否处于降级状态
+ * @param  dev8 左移后的 8 位设备地址（MPU6050 = 0xD0）
+ * @retval true 该设备连续失败达到阈值，当前降级
+ * @note   与 I2C_AuditDegraded()（总线级，任一设备降级即 true）不同，
+ *         本函数用于安全决策：只有关键设备才应触发锁存。
+ *         只读，任意任务可调用，最坏读到上一拍旧值。
+ */
+bool I2C_AuditDeviceDegraded(uint16_t dev8);
+
 void I2C_BusRecover(void);
 
 #endif /* I2C_ADAPTER_H */

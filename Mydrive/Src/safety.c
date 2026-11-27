@@ -1,8 +1,9 @@
 #include "safety.h"
 #include "fc_time.h"
 #include "i2c_adapter.h"
+#include "gy87.h"          /* GY87_MPU_ADDR：关键设备判定 */
 #include "iwdg.h"
-#include "rc.h"            /* RC_THR 枚举、RC_THR_ARM_WIN_*_US 回中窗口 */
+#include "rc.h"            /* RC_THR 枚举、RC_THR_ARM_WIN_*_US 解锁窗口 */
 #include "FreeRTOS.h"
 #include "task.h"          /* taskENTER_CRITICAL */
 #include <stdint.h>
@@ -22,13 +23,22 @@ static volatile uint32_t s_word = 0u;
 static volatile bool s_bench_override = false;
 #endif
 
-static SafetyState s_state   = SAFETY_DISARMED;
-static fc_usec_t   s_boot_us = 0u;
-static uint32_t    s_fault   = 0u;
-static bool        s_inited  = false;
+static SafetyState s_state         = SAFETY_DISARMED;
+static uint32_t    s_fault_live    = 0u;   /* 本拍实时条件 */
+static uint32_t    s_fault_latched = 0u;   /* 事件历史（锁存，上电才清） */
+static bool        s_inited        = false;
 
 static volatile bool s_host_arm_req = false;
-static volatile bool s_rc_arm_req   = false;   /* RC 源（CH7 一键起飞）解锁请求 */
+static volatile bool s_rc_arm_req   = false;   /* RC 源（CH7 电机锁/一键起飞）解锁请求 */
+
+/* ---- RC 失联分级 ---- */
+static fc_usec_t s_rc_loss_start_us  = 0u;
+static bool      s_rc_loss_active    = false;
+static fc_usec_t s_failsafe_start_us = 0u;
+
+/* ---- FATAL 自动恢复 ---- */
+static fc_usec_t s_fatal_clear_start_us = 0u;
+static bool      s_fatal_clear_active   = false;
 
 /* ---- 安全日志（SafetyTask 生产 / CommTask 消费） ---- */
 static volatile char    s_log_msg[40];
@@ -100,13 +110,18 @@ void Safety_Init(void)
 {
     s_word         = 0u;
     s_state        = SAFETY_DISARMED;
-    s_boot_us      = Fc_GetMicros();
-    s_fault        = 0u;
+    s_fault_live   = 0u;
+    s_fault_latched = 0u;
     s_host_arm_req = false;
     s_rc_arm_req   = false;
     s_tilt_active  = false;
     s_arming_start_us = 0u;
     s_tilt_start_us   = 0u;
+    s_rc_loss_start_us  = 0u;
+    s_rc_loss_active    = false;
+    s_failsafe_start_us = 0u;
+    s_fatal_clear_start_us = 0u;
+    s_fatal_clear_active   = false;
     s_log_pending  = false;
     s_log_msg[0]   = '\0';
     s_inited       = true;
@@ -122,11 +137,11 @@ void Safety_Step(const AttitudeSnapshot *att,
 
     /* ---- RC 即时健康（从快照读取） ---- */
     const bool rc_alive = (rc != NULL) && rc->valid;
-    /* 回中油门：解锁判据 = 杆处于回中窗口（静止 1500µs），而非低于下限 */
-    const bool thr_low  = rc_alive
-                       && (rc->ch[RC_THR] >= RC_THR_ARM_WIN_LO_US)
-                       && (rc->ch[RC_THR] <= RC_THR_ARM_WIN_HI_US);
-    if (!rc_alive) { s_fault |= SAFE_FAULT_RC_STALE; }
+    /* 油门解锁判据：归一化域，随 rc.h 的 RC_CAL_* 标定，端点偏差不影响 */
+    const float thr_n  = (rc != NULL) ? Rc_ThrottleNorm(rc->ch[RC_THR]) : 0.0f;
+    const bool thr_low = rc_alive
+                      && (thr_n >= RC_THR_ARM_WIN_LO_N)
+                      && (thr_n <= RC_THR_ARM_WIN_HI_N);
 
     /* ---- 数据年龄与即时健康 ---- */
     const uint32_t att_age = ((att != NULL) && att->valid)
@@ -137,14 +152,22 @@ void Safety_Step(const AttitudeSnapshot *att,
     const bool att_ok   = (att_age <= SAFE_ATT_STALE_US);
     const bool ctl_ok   = (ctl_age <= SAFE_CTRL_STALE_US);
     const bool chain_ok = att_ok && ctl_ok;
-    const bool i2c_bad  = I2C_AuditDegraded();
     const bool level_ok = AttitudeLevel(att);
 
-    if (!att_ok)  { s_fault |= SAFE_FAULT_ATT_STALE;  }
-    if (!ctl_ok)  { s_fault |= SAFE_FAULT_CTRL_STALE; }
-    if (i2c_bad)  { s_fault |= SAFE_FAULT_I2C_DEGRADED; }
+    /* ---- I2C 分级：只有 MPU 是关键设备，总线级仅诊断 ---- */
+    const bool imu_bad = I2C_AuditDeviceDegraded(GY87_MPU_ADDR);
+    const bool bus_bad = I2C_AuditDegraded();
 
-    /* ---- 倾斜超限 ---- */
+    /* ---- 实时故障位：随条件消失自动清零 ---- */
+    uint32_t live = 0u;
+    if (!rc_alive) live |= SAFE_FAULT_RC_STALE;
+    if (!att_ok)   live |= SAFE_FAULT_ATT_STALE;
+    if (!ctl_ok)   live |= SAFE_FAULT_CTRL_STALE;
+    if (bus_bad)   live |= SAFE_FAULT_I2C_DEGRADED;
+    if (imu_bad)   live |= SAFE_FAULT_IMU_DEGRADED;
+    s_fault_live = live;
+
+    /* ---- 倾斜超限（仅 ARMED 下累计；FATAL 是 crash-detection） ---- */
     bool tilt_fatal = false;
     if ((s_state == SAFETY_ARMED) && (att != NULL) && att->valid) {
         const bool tilted =
@@ -165,11 +188,12 @@ void Safety_Step(const AttitudeSnapshot *att,
     }
 
     /* ---- 状态机 ---- */
-    /* 解锁双源：上位机 0x01/0x02 与 CH7 逻辑或；失锁路径各自撤销（见下） */
+    /* 解锁双源：上位机 0x01/0x02 与 CH7（电机锁/一键起飞）逻辑或；
+     * 失锁路径各自撤销（见下） */
     const bool arm_req = s_host_arm_req || s_rc_arm_req;
     switch (s_state) {
     case SAFETY_DISARMED:
-        if (arm_req && chain_ok && level_ok && !i2c_bad
+        if (arm_req && chain_ok && level_ok && !imu_bad
             && rc_alive && thr_low) {
             s_state           = SAFETY_ARM_PENDING;
             s_arming_start_us = now;
@@ -178,7 +202,7 @@ void Safety_Step(const AttitudeSnapshot *att,
         break;
 
     case SAFETY_ARM_PENDING:
-        if (!arm_req || !chain_ok || !level_ok || i2c_bad
+        if (!arm_req || !chain_ok || !level_ok || imu_bad
             || !rc_alive || !thr_low) {
             s_state = SAFETY_DISARMED;
             Safety_Log(0u, "SAFETY: ARM ABORTED");
@@ -191,31 +215,98 @@ void Safety_Step(const AttitudeSnapshot *att,
     case SAFETY_ARMED:
         if (!arm_req) {
             s_state = SAFETY_DISARMED;
+            s_rc_loss_active = false;
             Safety_Log(0u, "SAFETY: DISARMED by host/rc");
-        } else if (!rc_alive) {
-            /* 记录"ARMED 状态下丢失 RC"这一历史严重事件 */
-            s_fault |= SAFE_FAULT_ARMED_LINK_LOSS;
-            s_host_arm_req = false;   /* 需上位机重新解锁，防链路恢复后自动起转 */
-            s_rc_arm_req   = false;
-            s_state  = SAFETY_DISARMED;
-            Safety_Log(1u, "SAFETY: DISARMED rc lost");
-        } else if (!chain_ok) {
-            /* 数据链短暂中断只关油门，不升级 FATAL：
-             * 50 ms 抖动就让飞控复位的代价远大于收益 */
+        } else if (!att_ok) {
+            /* 姿态链断（含 IMU 持续降级）：无法自稳，失锁 */
+            if (imu_bad) { s_fault_latched |= SAFE_FAULT_IMU_DEGRADED; }
+            s_fault_latched |= SAFE_FAULT_ARMED_LINK_LOSS;
             s_host_arm_req = false;
             s_rc_arm_req   = false;
+            s_rc_loss_active = false;
             s_state = SAFETY_DISARMED;
-            Safety_Log(1u, "SAFETY: DISARMED link lost");
-        } else if (i2c_bad) {
-            s_state = SAFETY_FATAL;
-            Safety_Log(1u, "SAFETY: FATAL i2c degraded");
-        } else if (tilt_fatal) {
+            Safety_Log(1u, "SAFETY: DISARMED att lost");
+        } else if (!ctl_ok) {
+            /* ControlTask 卡死：兜底失锁 */
+            if (imu_bad) { s_fault_latched |= SAFE_FAULT_IMU_DEGRADED; }
+            s_fault_latched |= SAFE_FAULT_ARMED_LINK_LOSS;
+            s_host_arm_req = false;
+            s_rc_arm_req   = false;
+            s_rc_loss_active = false;
+            s_state = SAFETY_DISARMED;
+            Safety_Log(1u, "SAFETY: DISARMED ctrl lost");
+        } else if (!rc_alive) {
+            /* RC 断但姿态/控制链健康：先保持 250 ms，再进 FAILSAFE 缓降 */
+            if (!s_rc_loss_active) {
+                s_rc_loss_active   = true;
+                s_rc_loss_start_us = now;
+            } else if (Fc_AgeUs(s_rc_loss_start_us, now) >= SAFE_RC_FAILSAFE_US) {
+                s_rc_loss_active    = false;
+                s_failsafe_start_us = now;
+                s_state = SAFETY_FAILSAFE;
+                Safety_Log(1u, "SAFETY: FAILSAFE rc lost");
+            }
+            /* 未超时：保持 ARMED，allowed 仍为 true，ControlTask 继续输出 */
+        } else {
+            s_rc_loss_active = false;   /* RC 恢复，清零计时 */
+        }
+        if ((s_state == SAFETY_ARMED) && tilt_fatal) {
+            s_fault_latched |= SAFE_FAULT_TILT_FATAL;
+            s_host_arm_req = false;
+            s_rc_arm_req   = false;
+            s_rc_loss_active = false;
+            s_fatal_clear_active = false;
             s_state = SAFETY_FATAL;
             Safety_Log(1u, "SAFETY: FATAL tilt");
         }
         break;
 
+    case SAFETY_FAILSAFE:
+        /* 自动缓降着陆：电机仍在自稳输出 + 油门缓降，此状态不拉低电机 */
+        if (!arm_req) {
+            s_state = SAFETY_DISARMED;
+            Safety_Log(0u, "SAFETY: DISARMED (failsafe, host/rc)");
+        } else if (!att_ok || !ctl_ok) {
+            if (imu_bad) { s_fault_latched |= SAFE_FAULT_IMU_DEGRADED; }
+            s_host_arm_req = false;
+            s_rc_arm_req   = false;
+            s_state = SAFETY_DISARMED;
+            Safety_Log(1u, "SAFETY: DISARMED chain lost");
+        } else if (rc_alive) {
+            /* RC 恢复，继续飞 */
+            s_state = SAFETY_ARMED;
+            Safety_Log(2u, "SAFETY: RC recovered");
+        } else if (Fc_AgeUs(s_failsafe_start_us, now) >= SAFE_FAILSAFE_DISARM_US) {
+            s_host_arm_req = false;
+            s_rc_arm_req   = false;
+            s_state = SAFETY_DISARMED;
+            Safety_Log(1u, "SAFETY: DISARMED failsafe timeout");
+        }
+        break;
+
     case SAFETY_FATAL:
+        /* FATAL 仅由倾角超限（tilt_fatal）触发：飞机已失控翻滚，拉低电机是
+         * crash-detection 式的保护，飞机必然坠地。因此退出后不存在“在空中
+         * 抢时间重新解锁”的问题——飞机已经在地面，操作者捡回后重新解锁/上电即可。
+         * 唯一出口是自动恢复：坠地扶平（倾角回中）+ 姿态链恢复，持续健康后回 DISARMED。 */
+        s_host_arm_req = false;
+        s_rc_arm_req   = false;
+
+        {
+            /* 自动恢复：姿态链健康（隐含 IMU 未降级）+ 倾角回中（飞机已扶平）。
+             * 不要求 RC 在线、不要求总线级全健康（磁力计/气压计坏了不阻止退出） */
+            const bool fatal_healthy = att_ok && level_ok;
+            if (!fatal_healthy) {
+                s_fatal_clear_active = false;
+            } else if (!s_fatal_clear_active) {
+                s_fatal_clear_active   = true;
+                s_fatal_clear_start_us = now;
+            } else if (Fc_AgeUs(s_fatal_clear_start_us, now) >= SAFE_FATAL_CLEAR_US) {
+                s_fatal_clear_active = false;
+                s_state = SAFETY_DISARMED;
+                Safety_Log(2u, "SAFETY: FATAL cleared");
+            }
+        }
         break;
 
     default:
@@ -224,37 +315,22 @@ void Safety_Step(const AttitudeSnapshot *att,
     }
 
     /* ---- 授权字 ---- */
-    const bool armed   = (s_state == SAFETY_ARMED);
+    const bool armed   = (s_state == SAFETY_ARMED) || (s_state == SAFETY_FAILSAFE);
     const bool fatal   = (s_state == SAFETY_FATAL);
-    const bool allowed = armed && chain_ok;
+    const bool allowed = armed && chain_ok;   /* FAILSAFE 下 chain_ok 健康 → 允许自稳输出 */
     PublishWord(allowed, armed, fatal, chain_ok);
 
-    /* ---- 看门狗门控 ---- */
-    const bool in_grace = (Fc_AgeUs(s_boot_us, now) < SAFE_IWDG_GRACE_US);
-    const bool feed = in_grace
-                   || (s_state == SAFETY_DISARMED)
-                   || (s_state == SAFETY_ARM_PENDING)
-                   || (s_state == SAFETY_ARMED);
-    if (feed) { (void)HAL_IWDG_Refresh(&hiwdg); }
+    /* ---- 看门狗：只检测 SafetyTask 是否仍在运行，不承担故障动作 ----
+     * 电机输出由 Safety_IsAllowed()/Motor 门控决定；任何状态都喂狗。 */
+    (void)HAL_IWDG_Refresh(&hiwdg);
 }
 
 SafetyState Safety_GetState(void)     { return s_state; }
-uint32_t    Safety_GetFaultMask(void) { return s_fault; }
+uint32_t    Safety_GetFaultMask(void) { return s_fault_latched; }
+uint32_t    Safety_GetActiveFaultMask(void) { return s_fault_live; }
 void        Safety_RequestArm(bool on){ s_host_arm_req = on; }   /* 上位机源 */
-void        Safety_RequestArmRc(bool on){ s_rc_arm_req = on; }    /* RC 源（CH7） */
+void        Safety_RequestArmRc(bool on){ s_rc_arm_req = on; }    /* RC 源（CH7 电机锁/一键起飞） */
 bool        Safety_IsArmed(void)      { return (s_word & SAFE_WORD_ARMED) != 0u; }
-
-void Safety_ClearFatal(void)
-{
-    if (s_state == SAFETY_FATAL) { s_state = SAFETY_DISARMED; }
-    s_fault            = 0u;
-    s_host_arm_req     = false;
-    s_rc_arm_req       = false;
-    s_tilt_active      = false;
-    s_arming_start_us  = 0u;
-    s_tilt_start_us    = 0u;
-    PublishWord(false, false, false, false);
-}
 
 bool Safety_IsAllowed(void)
 {

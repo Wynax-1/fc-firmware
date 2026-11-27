@@ -211,6 +211,20 @@ bool I2C_AuditDegraded(void)
     return false;
 }
 
+/**
+ * @brief  查询某个从设备是否处于降级状态
+ * @param  dev8 左移后的 8 位设备地址
+ * @retval true  该设备连续失败达到阈值，当前降级
+ * @note   只读、无副作用，可在任意任务调用。AuditFind(create=false) 只扫描
+ *         已登记槽位；used 由 BusTask 最后写入，因此跨任务读到 used==true 时
+ *         dev8/degraded 已初始化，属于良性竞态（最坏读到上一拍旧值）。
+ */
+bool I2C_AuditDeviceDegraded(uint16_t dev8)
+{
+    const AuditSlot *s = AuditFind(dev8, false);
+    return (s != NULL) && s->degraded;
+}
+
 /* ==========================================================================
  * 读写
  * ========================================================================== */

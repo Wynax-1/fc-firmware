@@ -8,6 +8,9 @@
 #define BMP180_REG_CTRL   0xF4u
 #define BMP180_REG_RESULT 0xF6u
 
+/* 非关键外设的错误重试间隔：避免 5 ms 级反复重试干扰关键 IMU */
+#define BMP_RETRY_DELAY_US  500000u
+
 
 static int16_t Be16(const uint8_t *p)
 {
@@ -223,9 +226,14 @@ void Bmp_Tick(BmpHandle *h, BaroSnapshot *out, fc_usec_t now)
     }
 
     case BMP_ST_ERROR:
+        /* 非关键外设：低频退避重试。
+         * 总线恢复已由 I2C_BusRead/Write 在启动失败/超时时完成，这里不再
+         * 重复调用 I2C_BusRecover()——否则气压计失效会周期性复位整条 I2C
+         * 总线，干扰关键 IMU 采样。 */
+        if (!Fc_Reached(h->deadline, now)) { return; }
+        h->deadline = now + BMP_RETRY_DELAY_US;
         if (++h->retry > 5u) { h->retry = 0; h->state = BMP_ST_CALIB; }
         else                 { h->state = BMP_ST_TRIG_T; }
-        I2C_BusRecover();
         break;
 
     default:

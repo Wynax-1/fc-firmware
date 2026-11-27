@@ -64,9 +64,13 @@ static volatile uint32_t s_wm_safety    = 0u;   /* 安全任务栈水位 */
 #define ATT_WAIT_TIMEOUT_MS  10u  /* 姿态数据等待超时 */
 #define SAFETY_PERIOD_MS     10u  /* 安全监控周期 */
 #define BUS_PERIOD_MS        1u   /* 总线收发周期 */
-#define DISPLAY_PERIOD_MS    100u /* 显示刷新周期 */
+#define DISPLAY_PERIOD_MS    500u /* 显示刷新周期 */
 #define STATUS_PERIOD_MS     200u /* 状态上报周期 */
 #define RC_PERIOD_MS         5u   /* 遥控解析周期 */
+
+/* RC 失联自动缓降斜率：ControlTask 2 ms/拍，每拍递减 1 µs ≈ 500 µs/s。
+ * 太快坠落偏快，太慢空中滞留过久；按实机整定。 */
+#define FAILSAFE_SLEW_US     1u
 
 /* CMSIS-RTOS2 的 osDelayUntil 在目标节拍已过时立即返回（不延时），
  * 因此“wake += period”一旦落后就永远追不上，会退化成忙循环。
@@ -86,33 +90,53 @@ static inline void PeriodWait(uint32_t *wake, uint32_t period)
 /* ==========================================================================
  * 姿态角目标限幅
  * ========================================================================== */
-/* 绝对硬限：滚转/俯仰目标一律不超过 ±45°（共 90°），所有控制来源统一生效。
- * 物理依据：45° 时升力垂直分量 cos45°≈0.71，手动油门要多给约 41% 才能维持
- * 高度；再大就快速掉高，且加速度计受机动加速度干扰、姿态估计变差。 */
-#define ATT_TILT_HARD_DEG    45.0f
-/* 摇杆满舵映射：±30°。常规航拍/调参够用，并给硬限留 15° 余量，
+/* 绝对硬限：滚转/俯仰目标一律不超过 ±40°，所有控制来源统一生效。
+ * 物理依据：倾角 θ 时维持高度需要 1/cosθ 倍悬停推力；45° 需约 1.41 倍，
+ * 本机油门余量不足，45° 已无法拉回（安全层 45° 判 FATAL）。
+ * 因此目标硬限压到 40°（约 1.31 倍），给致命阈值留 5° 余量。 */
+#define ATT_TILT_HARD_DEG    40.0f
+/* 摇杆满舵映射：±30°。常规航拍/调参够用，并给硬限留 10° 余量，
  * 避免杆量打满时直接贴着极限飞行。 */
 #define ATT_TILT_STICK_DEG   30.0f
 
 /* ==========================================================================
- * 定高辅助 / 一键起飞（CH5/CH6/CH7）
+ * CH5 三档传感器上限（aux_us[0]）：与定高辅助无关，始终参与编译
  * ========================================================================== */
-/* CH7 两档开关（aux[2]）：滞回 + 100ms 消抖 */
-#define CH7_HI_TH        0.30f
-#define CH7_LO_TH       (-0.30f)
+/* 滞回：±200µs 进入 / ±100µs 退出（µs 域） */
+#define CH5_HI_TH        1700u
+#define CH5_HI_REL_TH    1600u
+#define CH5_LO_TH        1300u
+#define CH5_LO_REL_TH    1400u
+
+/* ==========================================================================
+ * CH7 两档开关（aux_us[2]）：电机锁 / 一键起飞触发 —— 始终参与编译
+ * --------------------------------------------------------------------------
+ * 两种模式下都是"拨高才允许电机转"的硬开关：
+ *  - FEATURE_ALT_ASSIST 开：拨高 = 解锁并一键起飞；拨低 = 缓降/撤销解锁
+ *  - FEATURE_ALT_ASSIST 关：拨高 = 仅解锁（手动油门飞行）；拨低 = 立即上锁
+ * 上电/链路恢复时必须实际经历"低→高"边沿才有效：开关若一直停在 H，
+ * 只锁存为基准电平而不触发解锁（见 ControlTask 2c 消抖逻辑）。
+ * 阈值用滞回 + 范围判定，不依赖精确的 1000/2000µs。
+ * ========================================================================== */
+#define CH7_HI_TH        1650u
+#define CH7_LO_TH        1350u
 #define CH7_DEBOUNCE     50u
 
-/* CH6 一键起飞高度：aux[1] 线性映射 1.8~3.5 m，CH7 边沿瞬间锁存 */
+/* 油门斜变 ±16µs/拍，全行程约 125ms（两种模式共用） */
+#define BASE_SLEW_US     16u
+
+/* ==========================================================================
+ * 定高辅助 / 一键起飞（CH6 目标高度 + 自动起降状态机）—— 编译期可选
+ * --------------------------------------------------------------------------
+ * 由 FEATURE_ALT_ASSIST（control_types.h）决定是否参与编译。
+ * 未定义时：本节 CH6 与高度环/状态机全部不编译，CH3 油门按标准全行程直通。
+ * ========================================================================== */
+#ifdef FEATURE_ALT_ASSIST
+/* CH6 一键起飞高度：aux_us[1] 线性映射 1.8~3.5 m，CH7 边沿瞬间锁存 */
 #define TKOF_ALT_MIN_M   1.8f
 #define TKOF_ALT_MAX_M   3.5f
 #define TKOF_ALT_MID_M   2.65f
 #define TKOF_ALT_HALF_M  0.85f
-
-/* CH5 三档传感器上限（aux[0]）滞回：±0.40 进入 / ±0.20 退出 */
-#define CH5_HI_TH        0.40f
-#define CH5_HI_REL_TH    0.20f
-#define CH5_LO_TH       (-0.40f)
-#define CH5_LO_REL_TH   (-0.20f)
 
 /* 高度环：base_01 ∈ hover_ff ± ALT_OUT_DELTA
  * P/I/D 增益走 PID 参数 ID 2018~2020，上位机 PID 页在线调整，默认值见 Anonym_Init */
@@ -141,7 +165,6 @@ static inline void PeriodWait(uint32_t *wake, uint32_t period)
 #define LAND_FADE_MS     400u       /* 落地油门淡出 */
 #define LAND_TIMEOUT_MS  30000u     /* 缓降超时强制淡出 */
 #define ARM_WAIT_MS      1000u      /* CH7 边沿后等 Safety 确认解锁 */
-#define BASE_SLEW_US     16u        /* 油门斜变 ±16µs/拍，全行程约 125ms */
 
 typedef enum {
     ASSIST_MANUAL = 0,   /* 油门杆直通（回中摇杆：仅上杆映射） */
@@ -151,6 +174,7 @@ typedef enum {
     ASSIST_LAND,         /* 缓降 */
     ASSIST_FLARE,        /* 落地油门淡出 + 自动上锁 */
 } AssistState;
+#endif
 
 /* USER CODE END PD */
 
@@ -300,15 +324,13 @@ void MX_FREERTOS_Init(void) {
 
   /* Create the thread(s) */
   /* creation of ControlTask */
-  /* 台架测试（蓝牙 + GY-87）：暂不测控制/定高，注释掉 */
-  /* ControlTaskHandle = osThreadNew(Control_Task, NULL, &ControlTask_attributes); */
+  ControlTaskHandle = osThreadNew(Control_Task, NULL, &ControlTask_attributes);
 
   /* creation of AttitudeTask */
   AttitudeTaskHandle = osThreadNew(Attitude_Task, NULL, &AttitudeTask_attributes);
 
   /* creation of RcTask */
-  /* 台架无接收机：注释掉 PPM 任务 */
-  /* RcTaskHandle = osThreadNew(Rc_Task, NULL, &RcTask_attributes); */
+  RcTaskHandle = osThreadNew(Rc_Task, NULL, &RcTask_attributes);
 
   /* creation of CommTask */
   CommTaskHandle = osThreadNew(Comm_Task, NULL, &CommTask_attributes);
@@ -390,13 +412,17 @@ void Control_Task(void *argument)
 	bool      	yaw_hold_active = false;  /* yaw 角度保持模式（磁力计可信时置位） */
 	float     	yaw_hold_deg    = 0.0f;   /* 保持的目标航向，单位 deg */
 
-	/* ---- 定高辅助 / 一键起飞状态（CH5/CH6/CH7） ---- */
+	uint8_t   ch5_pos     = 2u;      /* 传感器上限档位：0=GYRO 1=IMU 2=MARG（CH5，始终参与） */
+	uint16_t  prev_thr_us    = MOTOR_US_MIN;    /* 上一拍油门输出（斜变状态） */
+	/* CH7 两档开关消抖状态（两种模式共用） */
+	bool      ch7_lvl      = false;  /* 消抖后的稳定电平 */
+	bool      ch7_synced   = false;  /* 首帧/链路恢复后已同步基准电平（不认作边沿） */
+	bool      ch7_low_seen = false;  /* 已观测到低位：只有低→高才算有效解锁沿 */
+	uint8_t   ch7_cnt      = 0u;     /* 候选电平持续拍数 */
+#ifdef FEATURE_ALT_ASSIST
+	/* ---- 定高辅助 / 一键起飞状态（CH6） ---- */
 	AssistState assist_state = ASSIST_MANUAL;
 	bool      ch7_session = false;   /* CH7=H 辅助会话 */
-	bool      ch7_lvl     = false;   /* 消抖后的稳定电平 */
-	bool      ch7_synced  = false;   /* 首帧/链路恢复后已同步基准电平（不认作边沿） */
-	uint8_t   ch7_cnt     = 0u;      /* 候选电平持续拍数 */
-	uint8_t   ch5_pos     = 2u;      /* 传感器上限档位：0=GYRO 1=IMU 2=MARG */
 	float     tko_alt_m   = 0.0f;    /* 锁存的一键起飞目标高度 m */
 	float     h_tgt_m     = 0.0f;    /* 高度环当前目标高度 m */
 	float     vz_cmd      = 0.0f;    /* 垂直速率指令 m/s */
@@ -412,8 +438,8 @@ void Control_Task(void *argument)
 	uint32_t  state_t0       = 0u;   /* 状态进入时刻（拍） */
 	uint32_t  touch_cnt      = 0u;   /* 落地检测连续拍数 */
 	uint32_t  assist_att_cnt = 0u;   /* 辅助态姿态丢失拍数 */
-	uint16_t  prev_thr_us    = MOTOR_US_MIN;    /* 上一拍油门输出（斜变状态） */
 	char      lbuf[32];              /* LOG 格式化缓冲 */
+#endif
 
   /* Infinite loop */
 
@@ -430,10 +456,12 @@ void Control_Task(void *argument)
 		/* ---- 1. 读输入 ---- */
 		SensorData       sen;
 		AttitudeSnapshot att;
-		AltitudeSnapshot alt_snap;
 		const bool sen_ok = FcChan_Read(&g_chan_sensor,   &sen) && sen.valid;
 		const bool att_ok = FcChan_Read(&g_chan_attitude, &att) && att.valid;
-		const bool alt_ok = FcChan_Read(&g_chan_altitude, &alt_snap) && alt_snap.valid;
+#ifdef FEATURE_ALT_ASSIST
+		AltitudeSnapshot alt;
+		const bool alt_ok = FcChan_Read(&g_chan_altitude, &alt) && alt.valid;
+#endif
 
 		AnonDbgCtrl dbg;
 		Anon_GetDbgCtrl(&dbg);
@@ -459,18 +487,37 @@ void Control_Task(void *argument)
 			control_on    = true;
 		} else if (rc_ok) {
 			/* 摇杆 → 目标姿态（满舵 ±ATT_TILT_STICK_DEG）、偏航速率（±90°/s） */
-			tgt_roll_deg  = rcn.ail * ATT_TILT_STICK_DEG;
-			tgt_pitch_deg = -rcn.ele * ATT_TILT_STICK_DEG;
-			tgt_yaw_rate  = rcn.rud * 90.0f * 0.0174533f;
+			tgt_roll_deg  = rcn.roll  * ATT_TILT_STICK_DEG;
+			tgt_pitch_deg = -rcn.pitch * ATT_TILT_STICK_DEG;
+			tgt_yaw_rate  = rcn.yaw * 90.0f * 0.0174533f;
+#ifdef FEATURE_ALT_ASSIST
 			/* 回中油门杆手动直通：仅用上半程（回中=怠速，满上=2000µs）；
 			 * 定高辅助可用时本值被 2f 接管覆盖 */
 			float t = rcn.thr - 0.5f;
 			if (t < 0.0f) { t = 0.0f; }
 			thr_us        = (uint16_t)(1000.0f + t * 2000.0f);
+#else
+			/* 标准油门直通：CH3 全行程 1000~2000µs → 1000~2000µs */
+			thr_us        = (uint16_t)(1000.0f + rcn.thr * 1000.0f);
+#endif
 			control_on    = true;
 		} else {
-			/* RC 失联且非调试：目标全零、油门最低。
-			 * 若当前 ARMED，Safety 会在下一拍迁到 DISARMED。 */
+			/* RC 失联且非调试：
+			 *  - Safety 仍允许输出（ARMED 未超时 或 FAILSAFE）→ 水平自稳 + 油门缓降着陆；
+			 *  - Safety 已失锁 → 目标全零、油门最低。 */
+			if (Safety_IsAllowed()) {
+				tgt_roll_deg  = 0.0f;          /* 水平自稳 */
+				tgt_pitch_deg = 0.0f;
+				tgt_yaw_rate  = 0.0f;
+				/* 缓降：每拍递减 FAILSAFE_SLEW_US，钳到最低油门，飞机缓慢下降 */
+				thr_us = (prev_thr_us > (MOTOR_US_MIN + FAILSAFE_SLEW_US))
+				       ? (uint16_t)(prev_thr_us - FAILSAFE_SLEW_US)
+				       : MOTOR_US_MIN;
+				control_on    = true;
+			} else {
+				thr_us        = MOTOR_US_MIN;
+				control_on    = false;
+			}
 		}
 
 		/* ---- 2a. 姿态角硬限幅（所有来源统一：DBG / RC / 未来的 0x41） ---- */
@@ -480,11 +527,11 @@ void Control_Task(void *argument)
 		/* ---- 2b. CH5 三档传感器上限（滞回消抖；RC 丢失保持最后档位） ---- */
 		if (rc_ok) {
 			uint8_t pos = ch5_pos;
-			if (pos == 2u)      { if (rcn.aux[0] < CH5_HI_REL_TH) { pos = 1u; } }
-			else if (pos == 0u) { if (rcn.aux[0] > CH5_LO_REL_TH) { pos = 1u; } }
+			if (pos == 2u)      { if (rcn.aux_us[0] < CH5_HI_REL_TH) { pos = 1u; } }
+			else if (pos == 0u) { if (rcn.aux_us[0] > CH5_LO_REL_TH) { pos = 1u; } }
 			else {
-				if (rcn.aux[0] > CH5_HI_TH)       { pos = 2u; }
-				else if (rcn.aux[0] < CH5_LO_TH)  { pos = 0u; }
+				if (rcn.aux_us[0] > CH5_HI_TH)       { pos = 2u; }
+				else if (rcn.aux_us[0] < CH5_LO_TH)  { pos = 0u; }
 			}
 			if (pos != ch5_pos) {
 				static const char *const mode_name[3] = {"SENS:GYRO", "SENS:IMU6", "SENS:MARG9"};
@@ -494,38 +541,46 @@ void Control_Task(void *argument)
 			}
 		}
 
-		/* ---- 2c. CH7 两档开关消抖边沿检测（100ms 电平稳定才算拨动） ---- */
+		/* ---- 2c. CH7 两档开关消抖边沿检测（两种模式共用） ---- */
 		/* 边沿标志仅本拍有效：防止解锁被拒后 CH7 仍停在 H 时跨拍重复触发 */
 		bool ch7_rise = false;
 		bool ch7_fall = false;
 		if (!rc_ok) {
-			ch7_synced = false;   /* 链路丢失：恢复后以当前档位重新同步基准 */
-			ch7_cnt    = 0u;
+			ch7_synced   = false;   /* 链路丢失：恢复后以当前档位重新同步基准 */
+			ch7_low_seen = false;   /* 恢复后必须重新经历低位才允许解锁 */
+			ch7_cnt      = 0u;
 		}
 		bool cand = ch7_lvl;
 		if (rc_ok) {
 			if (!ch7_synced) {
 				/* 上电/恢复首帧：直接锁存当前档位为基准电平，不产生边沿，
-				 * 防止开机时 CH7 已停在 H 被合成成 L→H 边沿误触发解锁起飞 */
-				ch7_lvl    = (rcn.aux[2] > CH7_HI_TH);
-				ch7_synced = true;
-				ch7_cnt    = 0u;
-			} else if (rcn.aux[2] > CH7_HI_TH)      { cand = true;  }
-			else if (rcn.aux[2] < CH7_LO_TH) { cand = false; }
+				 * 防止开机时 CH7 已停在 H 被合成成 L→H 边沿误触发解锁 */
+				ch7_lvl      = (rcn.aux_us[2] > CH7_HI_TH);
+				ch7_low_seen = (rcn.aux_us[2] < CH7_LO_TH);
+				ch7_synced   = true;
+				ch7_cnt      = 0u;
+			} else {
+				if (rcn.aux_us[2] > CH7_HI_TH)      { cand = true;  }
+				else if (rcn.aux_us[2] < CH7_LO_TH) { cand = false; }
+				/* 见过低位才记录：解锁沿必须来自"低→高"，上电即为高不算 */
+				if (rcn.aux_us[2] < CH7_LO_TH)      { ch7_low_seen = true; }
+			}
 		}
 		if (ch7_synced && cand != ch7_lvl) {
 			if (++ch7_cnt >= CH7_DEBOUNCE) {
-				ch7_lvl = cand;
-				ch7_cnt = 0u;
-				ch7_rise = cand;
+				ch7_lvl  = cand;
+				ch7_cnt  = 0u;
+				ch7_rise = cand && ch7_low_seen;   /* 无低位经历的高电平不产生解锁沿 */
 				ch7_fall = !cand;
+				if (ch7_rise) { ch7_low_seen = false; }  /* 一次低位只换一次解锁 */
 			}
 		} else {
 			ch7_cnt = 0u;
 		}
 
+		bool assist_on = false;   /* 仅辅助模式会置 true；两种配置下都需声明 */
+#ifdef FEATURE_ALT_ASSIST
 		/* ---- 2d. 定高辅助状态机（DBG 接管时整体旁路） ---- */
-		bool assist_on = false;
 		if (dbg_mode) {
 			if (assist_state != ASSIST_MANUAL) {
 				assist_state = ASSIST_MANUAL;
@@ -546,9 +601,10 @@ void Control_Task(void *argument)
 
 			if (ch7_rise && !ch7_session) {
 				/* L→H：锁存 CH6 目标高度；未解锁则发 RC 解锁请求，条件由 Safety 裁决 */
-				tko_alt_m = FC_SAT(TKOF_ALT_MID_M + rcn.aux[1] * TKOF_ALT_HALF_M,
+				tko_alt_m = FC_SAT(TKOF_ALT_MID_M
+				                   + ((float)rcn.aux_us[1] - 1500.0f) / 500.0f * TKOF_ALT_HALF_M,
 				                   TKOF_ALT_MIN_M, TKOF_ALT_MAX_M);
-				h_tgt_m      = alt_ok ? alt_snap.height_m : 0.0f;
+				h_tgt_m      = alt_ok ? alt.height_m : 0.0f;
 				base_01      = (float)(prev_thr_us - MOTOR_US_MIN) / 1000.0f;
 				alt_i        = 0.0f;
 				abort_reason = ALT_ABORT_NONE;
@@ -618,11 +674,11 @@ void Control_Task(void *argument)
 				}
 				if (assist_state == ASSIST_TAKEOFF) {
 					vz_cmd = VZ_TAKEOFF;
-					if ((alt_snap.height_m >= tko_alt_m - TKOF_DONE_ERR_M)
-						&& (fabsf(alt_snap.vz_mps) < TKOF_DONE_VZ)
+					if ((alt.height_m >= tko_alt_m - TKOF_DONE_ERR_M)
+						&& (fabsf(alt.vz_mps) < TKOF_DONE_VZ)
 						&& ((tick - state_t0) * 2u >= TKOF_DONE_MS)) {
 						assist_state = ASSIST_HOLD;
-						h_tgt_m      = alt_snap.height_m;   /* 到位即就地定高 */
+						h_tgt_m      = alt.height_m;   /* 到位即就地定高 */
 					} else if ((tick - state_t0) * 2u >= TKOF_TIMEOUT_MS) {
 						/* 推力不足迟迟不到位：转缓降，不无限顶油门 */
 						assist_state = ASSIST_LAND;
@@ -638,8 +694,8 @@ void Control_Task(void *argument)
 					else { t -= (t > 0.0f) ? VZ_DEADBAND : -VZ_DEADBAND; }
 					vz_cmd = FC_SAT(t / (0.5f - VZ_DEADBAND), -1.0f, 1.0f) * VZ_STICK_MAX;
 				} else {   /* ASSIST_LAND：缓降，末段减速 */
-					vz_cmd = (alt_snap.height_m > 0.5f) ? -VZ_LAND : -VZ_LAND_SLOW;
-					if (alt_snap.height_m < LAND_TOUCH_ALT_M) {
+					vz_cmd = (alt.height_m > 0.5f) ? -VZ_LAND : -VZ_LAND_SLOW;
+					if (alt.height_m < LAND_TOUCH_ALT_M) {
 						if (++touch_cnt >= (uint32_t)(LAND_TOUCH_MS / 2u)) {
 							assist_state = ASSIST_FLARE;
 							state_t0     = tick;
@@ -678,13 +734,13 @@ void Control_Task(void *argument)
 
 		/* ---- 2e. 高度环（新高度帧驱动 50Hz，事件式同外环） ---- */
 		if (assist_on && (assist_state != ASSIST_FLARE) && alt_ok
-			&& alt_snap.stamp.seq != last_alt_seq) {
+			&& alt.stamp.seq != last_alt_seq) {
 			float dt_a = (last_alt_usec == 0u) ? 0.02f
-			                     : (float)(alt_snap.stamp.usec - last_alt_usec) * 1e-6f;
+			                     : (float)(alt.stamp.usec - last_alt_usec) * 1e-6f;
 			if (dt_a <= 0.0f) { dt_a = 0.02f; }
 			if (dt_a >  0.1f) { dt_a = 0.1f;  }
-			last_alt_seq  = alt_snap.stamp.seq;
-			last_alt_usec = alt_snap.stamp.usec;
+			last_alt_seq  = alt.stamp.seq;
+			last_alt_usec = alt.stamp.usec;
 
 			/* 目标高度斜坡：TAKEOFF 爬向锁存值，HOLD/LAND 按速率指令积分 */
 			h_tgt_m += (assist_state == ASSIST_TAKEOFF) ? (VZ_TAKEOFF * dt_a)
@@ -693,13 +749,13 @@ void Control_Task(void *argument)
 			if (assist_state == ASSIST_TAKEOFF && tko_alt_m < ceil_m) { ceil_m = tko_alt_m; }
 			h_tgt_m = FC_SAT(h_tgt_m, ALT_TGT_FLOOR_M, ceil_m);
 
-			const float err_h = h_tgt_m - alt_snap.height_m;
+			const float err_h = h_tgt_m - alt.height_m;
 
 			/* 条件积分（与 pid.c 同风格）：修正饱和且误差同向时冻结 */
 			float i_new = alt_i + alt_ki * err_h * dt_a;
 			i_new = FC_SAT(i_new, -ALT_I_LIM, ALT_I_LIM);
 
-			float corr = alt_kp * err_h + i_new + alt_kd * (vz_cmd - alt_snap.vz_mps);
+			float corr = alt_kp * err_h + i_new + alt_kd * (vz_cmd - alt.vz_mps);
 			if (corr > ALT_OUT_DELTA) {
 				if (err_h <= 0.0f) { alt_i = i_new; }
 				corr = ALT_OUT_DELTA;
@@ -714,18 +770,33 @@ void Control_Task(void *argument)
 			 * 若只看目标，空中拉杆下降会把油门直接切断导致自由落体 */
 			if (assist_state == ASSIST_HOLD
 				&& h_tgt_m <= ALT_TGT_FLOOR_M
-				&& alt_snap.height_m <= LAND_TOUCH_ALT_M) {
+				&& alt.height_m <= LAND_TOUCH_ALT_M) {
 				base_01 = 0.0f;
 			} else {
 				base_01 = FC_SAT(hover_ff + corr, 0.05f, 0.95f);
 			}
 		}
 
+#else
+		/* ---- 2d'. 无定高辅助：CH7 就是电机锁 ---- */
+		/* 拨高 = 解锁，允许遥控器控制（Safety 另校验油门在最低位）；
+		 * 拨低 = 立即上锁。上电时开关若已在 H，2c 不产生解锁沿，故不会误解锁 */
+		if (ch7_rise) {
+			Safety_RequestArmRc(true);
+			AnonLog(2u, "CH7: RC ARM");
+		} else if (ch7_fall) {
+			Safety_RequestArmRc(false);
+			AnonLog(0u, "CH7: RC LOCK");
+		}
+#endif
+
 		/* ---- 2f. 油门接管 + 斜变混合（仅 RC 路径，DBG 直通不斜变） ---- */
 		if (!dbg_mode) {
+#ifdef FEATURE_ALT_ASSIST
 			if (assist_on) {
 				thr_us = (uint16_t)(MOTOR_US_MIN + (uint16_t)(base_01 * 1000.0f));
 			}
+#endif
 			if (rc_ok) {
 				const int32_t d = (int32_t)thr_us - (int32_t)prev_thr_us;
 				const int32_t step = (d > (int32_t)BASE_SLEW_US) ? (int32_t)BASE_SLEW_US
@@ -743,10 +814,12 @@ void Control_Task(void *argument)
 				Pid_SetGains(&pid_roll_att,   Anon_GetPidGain(2000u), Anon_GetPidGain(2001u), Anon_GetPidGain(2002u));
 				Pid_SetGains(&pid_pitch_att,  Anon_GetPidGain(2003u), Anon_GetPidGain(2004u), Anon_GetPidGain(2005u));
 				Pid_SetGains(&pid_yaw_att,    Anon_GetPidGain(2006u), Anon_GetPidGain(2007u), Anon_GetPidGain(2008u));
+#ifdef FEATURE_ALT_ASSIST
 				/* 高度环 2018~2020：直接取缓存，写入即生效 */
 				alt_kp = Anon_GetPidGain(2018u);
 				alt_ki = Anon_GetPidGain(2019u);
 				alt_kd = Anon_GetPidGain(2020u);
+#endif
 		}
 
 		/* ---- 4. 外环（ATT_HOLD 模式，新姿态事件驱动，约 200Hz） ---- */
@@ -829,8 +902,7 @@ void Control_Task(void *argument)
 		}
 
 		/* ---- 6. 混控（门控在 motor.c 里，DISARMED 时自动钳到 1000µs） ---- */
-		/* 台架测试：屏蔽电机输出，杜绝任何脉宽更新 */
-		/* Motor_Mix(thr_us, out_roll, out_pitch, out_yaw); */
+		Motor_Mix(thr_us, out_roll, out_pitch, out_yaw);
 
 		/* ---- 7. 发布 ctrl 快照（首字段 FcStamp 由 Publish 回填） ---- */
 		ControlOutput out;
@@ -841,8 +913,13 @@ void Control_Task(void *argument)
 		out.pitch_torque_nd = out_pitch;
 		out.yaw_torque_nd   = out_yaw;
 		out.assist_active   = assist_on;
+#ifdef FEATURE_ALT_ASSIST
 		out.alt_target_m    = assist_on ? h_tgt_m : 0.0f;
 		out.abort_reason    = abort_reason;
+#else
+		out.alt_target_m    = 0.0f;
+		out.abort_reason    = ALT_ABORT_NONE;
+#endif
 		FcChan_Publish(&g_chan_ctrl, &out, now);
 
 		/* ---- 8. 波形接线（每拍写，CommTask 10ms 读） ---- */
@@ -1007,8 +1084,7 @@ void Status_Task(void *argument)
 
 		s_heap_free = (uint32_t)xPortGetFreeHeapSize();
 		s_wm_att    = (uint32_t)uxTaskGetStackHighWaterMark(AttitudeTaskHandle);
-		/* ControlTask 已注释，此处一并注释 */
-		/* s_wm_ctrl = (uint32_t)uxTaskGetStackHighWaterMark(ControlTaskHandle); */
+		s_wm_ctrl = (uint32_t)uxTaskGetStackHighWaterMark(ControlTaskHandle);
 		s_wm_safety = (uint32_t)uxTaskGetStackHighWaterMark(SafetyTaskHandle);
 	}
   /* USER CODE END Status_Task */

@@ -33,7 +33,7 @@ static fc_usec_t   s_echo_rise   = 0u;   /* 上升沿的 Fc_GetMicros 时刻 */
 static uint32_t    s_echo_rise_cnt = 0u; /* 上升沿的 TIM2 CNT（用于算宽度） */
 static bool        s_have_rise_cnt = false;
 
-static float       s_dist_cm     = 0.0f;
+static uint32_t    s_dist_width_us = 0u;   /* 原始回波脉宽（µs），浮点换算在任务侧 */
 static fc_usec_t   s_dist_ts     = 0u;
 static bool        s_dist_ready  = false;
 static uint32_t    s_err_cnt     = 0u;
@@ -67,17 +67,12 @@ void Hcsr04_OnCapture(uint32_t cap_cnt, bool is_rise)
         s_have_rise_cnt = false;
         s_state = HS_IDLE;
 
-        /* width_us = 距离(cm) × 58 */
+        /* ISR 只存原始脉宽+时间戳+就绪标志；浮点换算与距离范围判定移到任务侧
+         * Hcsr04_GetDistance。此处仅做整数脉宽合理性筛（100~25000µs）。 */
         if (width_us >= 100u && width_us <= 25000u) {
-            const float cm = (float)width_us / 58.0f;
-            if ((cm >= HCSR04_DIST_MIN_CM) && (cm <= HCSR04_DIST_MAX_CM)) {
-                s_dist_cm    = cm;
-                s_dist_ts    = s_echo_rise;
-                s_dist_ready = true;
-                s_ok_cnt++;
-            } else {
-                s_err_cnt++;
-            }
+            s_dist_width_us = width_us;
+            s_dist_ts       = s_echo_rise;
+            s_dist_ready    = true;
         } else {
             s_err_cnt++;
         }
@@ -128,11 +123,30 @@ void Hcsr04_Tick(fc_usec_t now)
 
 bool Hcsr04_GetDistance(float *out_cm, fc_usec_t *out_ts)
 {
-    if (!s_dist_ready) { return false; }
-    if (out_cm != NULL) { *out_cm = s_dist_cm; }
-    if (out_ts != NULL) { *out_ts = s_dist_ts; }
+    /* PRIMASK 保护：与 TIM2 捕获中断互斥，原子完成"读脉宽+读时刻+清就绪" */
+    uint32_t  width_us;
+    fc_usec_t ts;
+    bool      ready;
+    const uint32_t primask = __get_PRIMASK();
+    __disable_irq();
+    ready    = s_dist_ready;
+    width_us = s_dist_width_us;
+    ts       = s_dist_ts;
     s_dist_ready = false;
-    return true;
+    __set_PRIMASK(primask);
+
+    if (!ready) { return false; }
+
+    /* 浮点换算与距离范围判定在任务侧完成（width_us = 距离(cm) × 58） */
+    const float cm = (float)width_us / 58.0f;
+    if ((cm >= HCSR04_DIST_MIN_CM) && (cm <= HCSR04_DIST_MAX_CM)) {
+        s_ok_cnt++;
+        if (out_cm != NULL) { *out_cm = cm; }
+        if (out_ts != NULL) { *out_ts = ts; }
+        return true;
+    }
+    s_err_cnt++;
+    return false;
 }
 
 uint32_t Hcsr04_GetOkCount(void)  { return s_ok_cnt; }

@@ -45,6 +45,9 @@ F401.txt
 .vscode/
 .idea/
 *.swp
+# clangd 索引辅助文件
+compile_commands.json
+compile_flags.txt
 
 # ==========================================================================
 # 操作系统

@@ -240,10 +240,10 @@ void HAL_UART_MspDeInit(UART_HandleTypeDef* uartHandle)
  * ========================================================================== */
 #define UART1_RX_BUF_SIZE   512u    /* 必须是 2 的幂，且 ≥ 2×最大帧长 */
 
-static uint8_t           s_rx_buf[UART1_RX_BUF_SIZE];
-static volatile uint32_t s_rx_evt_wr  = 0u;
-static volatile uint32_t s_rx_rd      = 0u;
-static volatile bool     s_rx_restart_req = false;
+static uint8_t           s_rx_buf[UART1_RX_BUF_SIZE];  /* 循环 DMA 落数据的环形缓冲 */
+static volatile uint32_t s_rx_evt_wr  = 0u;            /* 写侧单调计数，中断推进 */
+static volatile uint32_t s_rx_rd      = 0u;            /* 读侧单调计数，任务推进 */
+static volatile bool     s_rx_restart_req = false;     /* 接收恢复请求：中断置位，任务消费 */
 
 /**
  * @brief  计算 RX 环形缓冲的单调写计数
@@ -384,10 +384,10 @@ typedef struct {
     uint16_t len;
 } TxBlock;
 
-static TxBlock           s_tx_pool[UART1_TX_POOL_SIZE];
-static TxBlock          *s_tx_inflight = NULL;
-static osMessageQueueId_t s_tx_free_q  = NULL;
-static osMessageQueueId_t s_tx_ready_q = NULL;
+static TxBlock           s_tx_pool[UART1_TX_POOL_SIZE];  /* 静态块池，块本体常驻 */
+static TxBlock          *s_tx_inflight = NULL;           /* 正在 DMA 发送的块，NULL=空闲 */
+static osMessageQueueId_t s_tx_free_q  = NULL;           /* 空闲块指针队列 */
+static osMessageQueueId_t s_tx_ready_q = NULL;           /* 待发送块指针队列 */
 
 /**
  * @brief  初始化 TX 块池与 free/ready 两个队列
