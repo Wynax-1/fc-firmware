@@ -25,6 +25,30 @@
 #define CAL_FLAG_ACC     (1u << 1)
 #define CAL_FLAG_MAG     (1u << 2)
 
+/* ==========================================================================
+ * PID 持久化记录：与校准共用 sector 7，放在 +1 KB 偏移处（0x08060400）。
+ * 擦除以扇区为粒度 → ConfigSave 每次整页重写"校准 + PID"两条记录，
+ * 写其一绝不会擦掉另一。两步式：0xE2 只改 RAM 缓存，
+ * 0xE0/CID 0x45（CMD0=0xA5）才把 PID 缓存写入本记录并落盘。
+ * ========================================================================== */
+#define PID_FLASH_ADDR   (CAL_FLASH_ADDR + 0x400u)
+#define PID_MAGIC        0x50494431u          /* "PID1" */
+#define PID_BLOB_WORDS   (sizeof(PidBlob) / 4u)
+
+typedef struct {
+	uint32_t magic;
+	uint32_t ver;
+	float    pid[CAL_PID_COUNT];   /* ID 2000~2020，内部域 0~100 */
+	uint32_t cks;
+} PidBlob;
+
+typedef char pid_blob_size_must_be_word_aligned[
+    ((sizeof(PidBlob) % 4u) == 0u) ? 1 : -1];
+
+/* 上次已落盘 PID 的 RAM 镜像；magic != PID_MAGIC 表示从未落盘，
+ * 落盘时跳过该记录（保持擦除态 0xFF），上电加载即判无效 */
+static PidBlob s_pid_saved;
+
 typedef struct {
 	uint32_t magic;
 	uint32_t ver;
@@ -59,6 +83,18 @@ static uint32_t BlobCks(const CalibBlob *b)
 {
     const uint32_t *p = (const uint32_t *)(const void *)b;
     const uint32_t n = offsetof(CalibBlob, cks) / 4u;   /* 不再依赖 -1 魔法 */
+    uint32_t c = 0u;
+    for (uint32_t i = 0u; i < n; ++i) c += p[i];
+    return c;
+}
+
+/**
+ * @brief  计算 PID 记录校验和（除末尾 cks 外所有 32 位字累加）
+ */
+static uint32_t PidBlobCks(const PidBlob *b)
+{
+    const uint32_t *p = (const uint32_t *)(const void *)b;
+    const uint32_t n = offsetof(PidBlob, cks) / 4u;
     uint32_t c = 0u;
     for (uint32_t i = 0u; i < n; ++i) c += p[i];
     return c;
@@ -104,20 +140,29 @@ static void IwdgApply(uint32_t pr, uint32_t reload)
 }
 
 /**
- * @brief  将校准数据块整页写入 Flash
+ * @brief  将校准 + PID 两条记录整页写入 Flash（共用 sector 7）
  * @retval true  擦写成功
  * @retval false 解锁或擦除/编程失败
  * @note   扇区擦除约 1 s 阻塞，调用方应避开关键时序。
  *         擦除期间 CPU 取指挂起、喂狗的 SafetyTask 同样停摆，
  *         故擦写前临时放宽 IWDG，结束后（无论成败）恢复原参数。
+ *         两条记录总是同页重写：写 PID 不丢校准，写校准不丢 PID。
+ *         从未落盘过 PID 时跳过 PID 记录（保持擦除态）。
  */
-static bool CalibSave(void)
+static bool ConfigSave(void)
 {
 	/* 先填 magic/ver，cks 清零后再求和，保证校验字段自身不参与累加 */
 	s_cal.magic = CAL_MAGIC;
 	s_cal.ver   = 1u;
 	s_cal.cks   = 0u;
 	s_cal.cks   = BlobCks(&s_cal);
+
+	const bool pid_valid = (s_pid_saved.magic == PID_MAGIC);
+	if (pid_valid) {
+		s_pid_saved.ver = 1u;
+		s_pid_saved.cks = 0u;
+		s_pid_saved.cks = PidBlobCks(&s_pid_saved);
+	}
 
 	const uint32_t pr_save = hiwdg.Instance->PR;
 	const uint32_t rl_save = hiwdg.Instance->RLR;
@@ -141,6 +186,16 @@ static bool CalibSave(void)
 														CAL_FLASH_ADDR + (i * 4u), src[i]) != HAL_OK) {
 					ok = false;
 					break;
+				}
+			}
+			if (ok && pid_valid) {
+				const uint32_t *psrc = (const uint32_t *)(const void *)&s_pid_saved;
+				for (uint32_t i = 0u; i < PID_BLOB_WORDS; ++i) {
+					if (HAL_FLASH_Program(FLASH_TYPEPROGRAM_WORD,
+															PID_FLASH_ADDR + (i * 4u), psrc[i]) != HAL_OK) {
+						ok = false;
+						break;
+					}
 				}
 			}
 		}
@@ -171,8 +226,9 @@ static uint32_t s_gac_run;
 static bool     s_gac_done;
 
 /**
- * @brief  上电从 Flash 加载校准数据
- * @note   main.c USER CODE 2 调度器启动前调用；
+ * @brief  上电从 Flash 加载校准数据与已落盘 PID
+ * @note   main.c USER CODE 2 调度器启动前调用，且必须先于 Anonym_Init
+ *         （后者用 Calib_GetSavedPid 恢复 PID 缓存）；
  *         magic/ver/cks 三重校验任一失败则回退默认值。
  */
 void Calib_Init(void)
@@ -183,6 +239,14 @@ void Calib_Init(void)
 		s_cal = *f;
 	} else {
 		Defaults();   /* 首次上电/旧版本数据不兼容：单位阵 */
+	}
+
+	/* PID 记录独立校验：无效则镜像清零（落盘时跳过该记录） */
+	const PidBlob *pf = (const PidBlob *)(const void *)PID_FLASH_ADDR;
+	if ((pf->magic == PID_MAGIC) && (pf->ver == 1u) && (pf->cks == PidBlobCks(pf))) {
+		s_pid_saved = *pf;
+	} else {
+		(void)memset(&s_pid_saved, 0, sizeof(s_pid_saved));
 	}
 
 	/* 每次上电重新做陀螺零偏自动校准 */
@@ -303,11 +367,43 @@ bool Calib_GetParam(uint16_t id, int32_t *val)
  * @brief  把当前 RAM 校准数据落盘到 Flash
  * @note   两步式协议：0xE2 写参数只改 RAM；上位机再发 0xE0/CID 0x43
  *         （CMD0=0xA5 魔数）才调用本函数真正擦写 Flash。
- *         内部 CalibSave 已临时放宽 IWDG，擦除阻塞期间不会复位。
+ *         擦写时同步重写已落盘的 PID 记录，两者互不丢失。
+ *         内部 ConfigSave 已临时放宽 IWDG，擦除阻塞期间不会复位。
  */
 void Calib_SaveToFlash(void)
 {
-	(void)CalibSave();
+	(void)ConfigSave();
+}
+
+/**
+ * @brief  把 PID 缓存写入持久化记录并整页落盘
+ * @param  pid : CAL_PID_COUNT 个增益（内部域 0~100）
+ * @retval true  擦写成功
+ * @retval false 参数为空或 Flash 擦写失败
+ * @note   先更新 RAM 镜像再落盘：失败时镜像与 Flash 一致（均为旧值），
+ *         校准记录同页重写不会丢失。
+ */
+bool Calib_SavePidToFlash(const float *pid)
+{
+	if (pid == NULL) { return false; }
+
+	s_pid_saved.magic = PID_MAGIC;
+	for (uint32_t i = 0u; i < CAL_PID_COUNT; ++i) {
+		s_pid_saved.pid[i] = pid[i];
+	}
+	return ConfigSave();
+}
+
+/**
+ * @brief  读取上次落盘的 PID（上电恢复用）
+ * @param  out : 输出数组，容量 CAL_PID_COUNT 个 float
+ * @retval true  存在有效记录
+ */
+bool Calib_GetSavedPid(float *out)
+{
+	if ((out == NULL) || (s_pid_saved.magic != PID_MAGIC)) { return false; }
+	(void)memcpy(out, s_pid_saved.pid, sizeof(s_pid_saved.pid));
+	return true;
 }
 
 /**

@@ -62,6 +62,10 @@ static volatile uint8_t s_tw_mode   = 0u;
 static float s_pid_gain[ANON_PID_COUNT];   /* 内部域 0~100 */
 static volatile uint32_t s_tx_drop_cnt = 0u;
 
+/* PID 落盘记录容量与 calib.h 定义必须一致 */
+typedef char anon_pid_count_must_match_calib[
+    ((ANON_PID_COUNT) == (CAL_PID_COUNT)) ? 1 : -1];
+
 /* ==========================================================================
  * 小端写入 / 读取、浮点定标
  * ========================================================================== */
@@ -236,6 +240,8 @@ static void AnonHandleFrame(const uint8_t *f, uint8_t n)
      *   0x02  锁定请求   -> Safety_RequestArm(false)
      *   0x43  校准保存   -> 需 CMD0=0xA5 魔数，真正擦写 Flash
      *   0x44  校准原始值模式 -> CMD0=1 开 / 0 关（采样期旁路 Calib_Apply）
+     *   0x45  PID 保存   -> 需 CMD0=0xA5 魔数，把 PID 缓存与校准同页落盘；
+     *                       授权（ARMED）状态拒绝：擦除阻塞 ~1 s 不可出现在飞行中
      */
     if (len >= 1u) {
 			switch (f[4]) {
@@ -256,6 +262,17 @@ static void AnonHandleFrame(const uint8_t *f, uint8_t n)
 					if (raw != Calib_IsRawMode()) {
 						Calib_SetRawMode(raw);
 						AnonLog(2u, raw ? "CAL RAW MODE ON" : "CAL RAW MODE OFF");
+					}
+				}
+				break;
+			case 0x45u:
+				if ((len >= 2u) && (f[5] == 0xA5u)) {
+					if (Safety_IsAllowed()) {
+						AnonLog(1u, "PID SAVE BLOCKED: ARMED");
+					} else if (Calib_SavePidToFlash(s_pid_gain)) {
+						AnonLog(2u, "PID SAVED TO FLASH");
+					} else {
+						AnonLog(1u, "PID SAVE FAIL");
 					}
 				}
 				break;
@@ -653,11 +670,13 @@ void Anonym_Step(void)
  * ========================================================================== */
 
 /**
- * @brief  匿名协议模块初始化，复位状态机、清空 PID 参数缓存
+ * @brief  匿名协议模块初始化，复位状态机、初始化 PID 参数缓存
  * @param  无
  * @retval 无
  * @note   姿态/角速度 PID 默认全 0，需上位机经 0xE2 下发；
  *         高度环 PID（ID 2018~2020）填入台架默认值，上位机可直接读取。
+ *         若存在 0xE0/CID 0x45 落盘的 PID 记录则覆盖默认值
+ *         （Calib_Init 已先于本函数完成 Flash 加载）。
  */
 void Anonym_Init(void)
 {
@@ -678,6 +697,17 @@ void Anonym_Init(void)
     s_pid_gain[18] = 0.35f;   /* P：高度误差 → 油门修正 */
     s_pid_gain[19] = 0.06f;   /* I：静差 */
     s_pid_gain[20] = 0.18f;   /* D：垂直速度阻尼 */
+
+    /* 恢复上次落盘的 PID：逐值套与 ParamSet 相同的护栏，防脏数据 */
+    float saved[CAL_PID_COUNT];
+    if (Calib_GetSavedPid(saved)) {
+        for (uint32_t i = 0u; i < ANON_PID_COUNT; ++i) {
+            float v = saved[i];
+            if (!(v >= 0.0f))   { v = 0.0f; }     /* 同时拦截 NaN */
+            if (v > 100.0f)     { v = 100.0f; }
+            s_pid_gain[i] = v;
+        }
+    }
 }
 
 void Anonym_TxInit(void)

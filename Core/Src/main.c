@@ -116,8 +116,8 @@ int main(void)
 	
 	Fc_TimeInit();        /* 使能 DWT：Fc_GetMicros 的时间基准，必须最先调用 */
 	Fc_Interlock_Init();
+	Calib_Init();         /* 先于 Anonym_Init：后者用 Calib_GetSavedPid 恢复 PID */
 	Anonym_Init();
-	Calib_Init();
 	Safety_Init();
 	Motor_Init();
 	Rc_Init();

@@ -36,12 +36,40 @@ enum {
     CAL_ID_LAST  = CAL_ID_GYRO_B_Z,
 };
 
+/* PID 参数个数（ID 2000~2020），与 anonym.c 的 ANON_PID_COUNT 一致 */
+#define CAL_PID_COUNT  21u
+
 void Calib_Init(void);
 void Calib_GyroAutoCal(SensorData *s);
 void Calib_Apply(SensorData *s);
 bool Calib_GetParam(uint16_t id, int32_t *val);
 bool Calib_SetParam(uint16_t id, int32_t val);
 void Calib_SaveToFlash(void);
+
+/* ==========================================================================
+ * PID 掉电保持（与校准共用 sector 7，记录放在 +1 KB 偏移处）
+ * --------------------------------------------------------------------------
+ * F401 擦除以扇区为粒度，任何一次落盘都必须整页重写"校准 + 已存 PID"
+ * 两条记录，因此写其一绝不会擦掉另一。
+ * 两步式协议：0xE2 写 PID 只改 RAM 缓存；上位机发 0xE0/CID 0x45
+ * （CMD0=0xA5）才把当前 PID 缓存写入持久化记录并擦写整扇区。
+ * ========================================================================== */
+
+/**
+ * @brief  把 PID 缓存（CAL_PID_COUNT 个 float，内部域 0~100）落盘
+ * @param  pid : 指向 21 个增益的数组
+ * @retval true  擦写成功（校准记录同时重写，不会丢失）
+ * @retval false 参数为空或 Flash 擦写失败
+ */
+bool Calib_SavePidToFlash(const float *pid);
+
+/**
+ * @brief  读取上次落盘的 PID（上电恢复用）
+ * @param  out : 输出数组，容量 CAL_PID_COUNT 个 float
+ * @retval true  存在有效记录，已拷入 out
+ * @retval false 从未落盘或记录校验失败
+ */
+bool Calib_GetSavedPid(float *out);
 
 /* 校准原始值模式（上位机采样期间开启，CID 0x44）：
  * 开启后 Calib_Apply 直接返回，0x01/0x02 上报未经校准的原始数据，
